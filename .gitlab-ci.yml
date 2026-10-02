@@ -1,0 +1,182 @@
+stages:
+  - build-node
+  - build-go
+  - build-docker
+  - publish-docker
+  - publish-ghcr
+  - publish-release
+
+variables:
+  IMAGE_NAME: ${OCI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}
+  IMAGE_NAME_LATEST: ${OCI_REGISTRY_IMAGE}:latest
+  BUILD_NAME: "${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}@${CI_COMMIT_SHORT_SHA}"
+  GHCR_IMAGE: ${GHCR_REGISTRY}/${GHCR_IMAGE_OWNER}/${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}
+  GHCR_IMAGE_LATEST: ${GHCR_REGISTRY}/${GHCR_IMAGE_OWNER}/${CI_PROJECT_NAME}:latest
+  GITHUB_REPO: ${GHCR_IMAGE_OWNER}/${CI_PROJECT_NAME}
+
+build-node:
+  stage: build-node
+  image: node:lts-alpine
+  retry:
+    max: 1
+    exit_codes:
+      - 1
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - when: never
+  before_script:
+    - cd ui
+  script:
+    - npm install
+    - npm run build
+    - echo "${CI_COMMIT_SHA}" > dist/.app_commit_sha
+  cache:
+    key:
+      files:
+        - ui/package.json
+      prefix: ${CI_PROJECT_NAMESPACE}@${CI_PROJECT_NAME}
+    paths:
+      - ui/node_modules/
+  artifacts:
+    name: "${BUILD_NAME}-ui"
+    when: on_success
+    paths:
+      - ui/dist/
+    expire_in: 2 weeks
+
+build-go:
+  stage: build-go
+  image: golang:1-bookworm
+  dependencies:
+    - build-node
+  retry:
+    max: 1
+    exit_codes:
+      - 1
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+      variables:
+        ENTRYPOINT: "api/cmd/main.go"
+        BUILD_COMMAND_GENERIC: "CGO_ENABLED=0 go build -x -v -trimpath -ldflags='-v -s -w' -buildmode=pie -tags=osusergo,netgo,static_build -buildvcs=false"
+        BUILD_COMMAND_LINUX: "GOOS=linux CGO_ENABLED=1 go build -x -v -trimpath -ldflags='-v -linkmode=external -s -w -extldflags=--static-pie' -buildmode=pie -tags=osusergo,netgo,static_build -buildvcs=false"
+    - when: never
+  before_script:
+    - ARCH=$(uname -m)
+    - GCC_CROSS_PACKAGE=$((test "${ARCH}" = 'aarch64' && echo 'gcc-x86-64-linux-gnu') || (test "${ARCH}" = 'x86_64' && echo 'gcc-aarch64-linux-gnu'))
+    - apt update && apt install -y "${GCC_CROSS_PACKAGE}"
+  script:
+    - go mod download
+    - go mod verify
+    # Build for linux amd64
+    - eval "CC=x86_64-linux-gnu-gcc GOARCH=amd64 ${BUILD_COMMAND_LINUX} -o 'build/mwp.linux.amd64' '${ENTRYPOINT}'"
+    # Build for linux arm64
+    - eval "CC=aarch64-linux-gnu-gcc GOARCH=arm64 ${BUILD_COMMAND_LINUX} -o 'build/mwp.linux.arm64' '${ENTRYPOINT}'"
+    # Build for windows amd64
+    - eval "GOARCH=amd64 GOOS=windows ${BUILD_COMMAND_GENERIC} -o 'build/mwp.windows.amd64.exe' '${ENTRYPOINT}'"
+    # Build for windows arm64
+    - eval "GOARCH=arm64 GOOS=windows ${BUILD_COMMAND_GENERIC} -o 'build/mwp.windows.arm64.exe' '${ENTRYPOINT}'"
+    # Build for darwin amd64
+    - eval "GOARCH=amd64 GOOS=darwin ${BUILD_COMMAND_GENERIC} -o 'build/mwp.darwin.amd64' '${ENTRYPOINT}'"
+    # Build for darwin arm64
+    - eval "GOARCH=arm64 GOOS=darwin ${BUILD_COMMAND_GENERIC} -o 'build/mwp.darwin.arm64' '${ENTRYPOINT}'"
+  artifacts:
+    name: "${BUILD_NAME}-go"
+    when: on_success
+    paths:
+      - build/
+    expire_in: 2 weeks
+
+.build-docker-base:
+  stage: build-docker
+  image: docker:cli
+  services:
+    - docker:dind
+  dependencies:
+    - build-go
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - when: never
+  before_script:
+    - docker login --username "${OCI_REGISTRY_USER}" --password "${OCI_REGISTRY_PASSWORD}" "${OCI_REGISTRY}"
+    - docker buildx create --name docker-container --driver docker-container --bootstrap --use
+  script:
+    - docker buildx build .
+      --file docker/Dockerfile
+      --platform "${IMAGE_PLATFORM}"
+      --cache-from "type=registry,ref=${IMAGE_NAME_LATEST}"
+      --cache-to "type=inline"
+      --build-arg "APP_COMMIT_SHA=${CI_COMMIT_SHA}"
+      --provenance false
+      --output "type=image,oci-mediatypes=true,store=false,compression=gzip,compression-level=6,\"name=${OCI_REGISTRY_IMAGE}\",push=true,push-by-digest=true"
+      --metadata-file "docker/buildx-metadata-${PLATFORM}.json"
+  artifacts:
+    name: "${BUILD_NAME}-build-docker-${PLATFORM}"
+    when: on_success
+    paths:
+      - docker/
+    expire_in: 1 weeks
+
+build-docker-amd64:
+  extends: .build-docker-base
+  variables:
+    PLATFORM: amd64
+    IMAGE_PLATFORM: linux/amd64
+  tags:
+    - saas-linux-small-amd64
+
+build-docker-arm64:
+  extends: .build-docker-base
+  variables:
+    PLATFORM: arm64
+    IMAGE_PLATFORM: linux/arm64/v8
+  tags:
+    - saas-linux-small-arm64
+
+publish-docker:
+  stage: publish-docker
+  image: docker:cli
+  services:
+    - docker:dind
+  dependencies:
+    - build-docker-amd64
+    - build-docker-arm64
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - when: never
+  variables:
+    PLATFORM_AMD64: amd64
+    PLATFORM_ARM64: arm64
+  before_script:
+    - apk add jq
+    - docker login --username "${GHCR_USERNAME}" --password "${GHCR_TOKEN}" "${GHCR_REGISTRY}"
+    - docker login --username "${OCI_REGISTRY_USER}" --password "${OCI_REGISTRY_PASSWORD}" "${OCI_REGISTRY}"
+  script:
+    - IMAGE_DIGEST_AMD64=$(jq -r '."containerimage.digest"' < docker/buildx-metadata-${PLATFORM_AMD64}.json)
+    - IMAGE_DIGEST_ARM64=$(jq -r '."containerimage.digest"' < docker/buildx-metadata-${PLATFORM_ARM64}.json)
+    - docker manifest create "${IMAGE_NAME}" --amend "${OCI_REGISTRY_IMAGE}@${IMAGE_DIGEST_AMD64}" --amend "${OCI_REGISTRY_IMAGE}@${IMAGE_DIGEST_ARM64}"
+    - docker manifest push "${IMAGE_NAME}"
+    - docker manifest create "${IMAGE_NAME_LATEST}" --amend "${OCI_REGISTRY_IMAGE}@${IMAGE_DIGEST_AMD64}" --amend "${OCI_REGISTRY_IMAGE}@${IMAGE_DIGEST_ARM64}"
+    - docker manifest push "${IMAGE_NAME_LATEST}"
+    - docker buildx imagetools create --tag "${GHCR_IMAGE}" "${IMAGE_NAME}"
+    - docker buildx imagetools create --tag "${GHCR_IMAGE_LATEST}" "${IMAGE_NAME_LATEST}"
+
+publish-github-release:
+  stage: publish-release
+  image: alpine:latest
+  dependencies:
+    - build-go
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - when: never
+  before_script:
+    - apk add --no-cache github-cli
+  script:
+    - |
+      gh release view "${CI_COMMIT_TAG}" --repo "${GITHUB_REPO}" >/dev/null 2>&1 \
+        || gh release create "${CI_COMMIT_TAG}" \
+             --repo "${GITHUB_REPO}" \
+             --title "${CI_COMMIT_TAG}" \
+             --generate-notes
+    - gh release upload "${CI_COMMIT_TAG}" build/* --repo "${GITHUB_REPO}" --clobber
+  variables:
+    GH_TOKEN: ${GHCR_TOKEN}

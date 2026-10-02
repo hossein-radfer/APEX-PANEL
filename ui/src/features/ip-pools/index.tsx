@@ -1,0 +1,60 @@
+import { useIPPoolsListQuery } from '@/hooks/ip-pool/useIPPoolsListQuery.ts'
+import { Header } from '@/components/layout/header'
+import { Main } from '@/components/layout/main'
+import { ProfileDropdown } from '@/components/profile-dropdown'
+import { Search } from '@/components/search'
+import { ThemeSwitch } from '@/components/theme-switch'
+import { poolsColumns } from '@/features/ip-pools/components/pools-columns.tsx'
+import { PoolsDialogs } from '@/features/ip-pools/components/pools-dialogs.tsx'
+import { PoolsPrimaryButtons } from '@/features/ip-pools/components/pools-primary-buttons.tsx'
+import PoolsProvider from '@/features/ip-pools/context/pools-context.tsx'
+import { DataTableSkeleton } from '@/features/shared-components/table/data-table-skeleton.tsx'
+import { DataTable } from '@/features/shared-components/table/data-table.tsx'
+
+export default function Pools() {
+  const {
+    data: ipPoolsList,
+    isLoading: isIPPoolsListLoading,
+    refetch: refetchIPPoolsList,
+    isRefetching: isIPPoolsListRefetching,
+  } = useIPPoolsListQuery()
+
+  return (
+    <PoolsProvider>
+      <Header fixed>
+        <Search />
+        <div className='ml-auto flex items-center space-x-4'>
+          <ThemeSwitch />
+          <ProfileDropdown />
+        </div>
+      </Header>
+
+      <Main>
+        <div className='mb-2 flex flex-wrap items-center justify-between space-y-2'>
+          <div>
+            <h2 className='text-2xl font-bold tracking-tight'>
+              استخرهای IP
+            </h2>
+            <p className='text-muted-foreground'>
+              مدیریت استخرهای IP میکروتیک شما
+            </p>
+          </div>
+          <PoolsPrimaryButtons
+            refetchIPPoolsList={refetchIPPoolsList}
+            isIPPoolsListRefetching={isIPPoolsListRefetching}
+          />
+        </div>
+
+        <div className='-mx-4 flex-1 overflow-auto px-4 py-1'>
+          {isIPPoolsListLoading ? (
+            <DataTableSkeleton columns={7} rows={1} />
+          ) : (
+            <DataTable data={ipPoolsList ?? []} columns={poolsColumns} />
+          )}
+        </div>
+      </Main>
+
+      <PoolsDialogs />
+    </PoolsProvider>
+  )
+}

@@ -1,0 +1,127 @@
+ApexPanel Source-Available License (ASAL) v1.0
+Copyright (c) 2026 YOUR-NAME
+
+1. DEFINITIONS
+
+"Software" means the ApexPanel source code, binaries, documentation, and
+all associated files contained in this repository, including any updates
+or new versions made available by the Licensor.
+
+"Licensor" means the copyright holder of the Software, YOUR-NAME.
+
+"You" means any individual or entity exercising rights under this License.
+
+"Instance" means a single running deployment of the Software, installed
+and operated by You on infrastructure You control (e.g. Your own server,
+VPS, or Docker host).
+
+"End User" means a customer or reseller to whom You provide access to
+services running on Your own Instance of the Software (for example, VPN
+or tunnel access sold or provided through Your own Instance).
+
+2. GRANT OF RIGHTS
+
+Subject to the terms of this License, the Licensor grants You a
+worldwide, royalty-free, non-exclusive, non-transferable license to:
+
+  a. View and read the Software's source code for any purpose, including
+     evaluation, security research, and learning;
+
+  b. Download, install, and run unmodified copies of the Software on
+     Instances You control, including for commercial purposes -- this
+     explicitly includes operating the Software's built-in reseller
+     features to provide and charge End Users for services delivered
+     through Your Instance;
+
+  c. Make purely local modifications to the Software for Your own
+     internal use on Your own Instance(s), provided such modifications
+     are never distributed, published, sold, sublicensed, or otherwise
+     made available to any third party in any form.
+
+3. RESTRICTIONS
+
+You may NOT, under any circumstances:
+
+  a. **Resell or redistribute the Software itself.** You may not sell,
+     sublicense, rent, lease, or otherwise distribute the Software (in
+     source or compiled form, modified or unmodified) as a standalone
+     product, template, or codebase to any third party, whether for a
+     fee or for free.
+
+  b. **Rebrand and republish.** You may not publish, release, or
+     distribute the Software, or any modified or derivative version of
+     it, under a different name, trademark, or branding -- including but
+     not limited to renaming the project, replacing its branding assets,
+     or presenting it as an original or competing product.
+
+  c. **Publish modified source.** You may not publish or otherwise make
+     publicly or commercially available any modified version of the
+     Software's source code, whether as a fork, a patch set, a
+     "white-labeled" build, or any other derivative distribution.
+
+  d. **Copy without attribution.** You may not copy substantial portions
+     of the Software's source code into another project, product, or
+     repository without clear, visible attribution to the Licensor and
+     to this repository as the original source.
+
+  e. **Circumvent or tamper with licensing.** You may not bypass, patch,
+     reverse-engineer, disable, or otherwise interfere with the
+     Software's license activation, validation, fingerprinting, or
+     update-checking mechanisms, nor use, distribute, or assist others
+     in using any tool, patch, key generator, or technique designed to
+     obtain, extend, or simulate a valid license without proper
+     authorization from the Licensor. This restriction applies
+     regardless of whether such circumvention is for personal,
+     internal, or commercial use.
+
+  f. **Misrepresent authorship or origin.** You may not remove, obscure,
+     or alter copyright notices, license files, or any other indication
+     that the Software originates from the Licensor.
+
+4. LICENSE ACTIVATION
+
+Use of the Software's full functionality requires activation against the
+Licensor's license server, using either a purchased license key or an
+eligible free trial, as described in the Software's own documentation.
+Operating the Software without valid activation, or through any means
+described as prohibited in Section 3(e), is a material breach of this
+License.
+
+5. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR
+OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE
+OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+6. TERMINATION
+
+Any violation of Section 3 automatically and immediately terminates Your
+rights under this License. Upon termination, You must cease all use,
+distribution, and operation of the Software and destroy all copies in
+Your possession. The Licensor reserves the right to pursue any remedy
+available under applicable law for violations of this License, including
+but not limited to claims arising from unauthorized resale,
+redistribution, rebranding, or license circumvention.
+
+7. CONTRIBUTIONS
+
+If You submit a contribution (e.g. a pull request) to the Licensor's own
+repository, You grant the Licensor an unrestricted, perpetual,
+irrevocable license to use, modify, and distribute that contribution as
+part of the Software, under the terms of this License or any future
+license the Licensor chooses for the Software.
+
+8. GOVERNING LAW
+
+This License shall be governed by and interpreted in accordance with the
+laws applicable in the Licensor's jurisdiction, without regard to its
+conflict of law provisions.
+
+---
+
+For questions about licensing, commercial arrangements, or permissions
+beyond the scope of this License, contact the Licensor via the contact
+information listed in the project's README.

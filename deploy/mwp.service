@@ -1,0 +1,55 @@
+[Unit]
+Description=ApexPanel (Mikrotik WireGuard Panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mwp
+ExecStart=/usr/local/bin/mwp
+Restart=always
+RestartSec=3
+# Safety net for the rare case of an unrecoverable process crash (e.g. an
+# OS-level OOM kill) -- application-level panics inside goroutines the panel
+# itself owns are already recovered in code (see api/service/bot_poller.go
+# and Echo's middleware.Recover()), so this should rarely if ever trigger,
+# but a supervisor-level restart is the only way to guarantee recovery from
+# something outside the process's own control.
+StartLimitIntervalSec=0
+
+# KillMode=process (not the systemd default "control-group") ensures ONLY
+# the main mwp process itself is signaled on stop/restart -- irrelevant here
+# since mwp spawns no child processes, but set explicitly so a future change
+# never accidentally sends a stray SIGTERM to something else in the unit's
+# cgroup.
+KillMode=process
+
+# This is the actual fix for "the panel receives SIGTERM and shuts down on
+# its own, with no OOM and no code path in the app that sends it": running
+# via `nohup ... &` in an SSH/interactive shell does NOT protect a process
+# from systemd-logind's session cleanup (KillUserProcesses=yes is the
+# default on most modern distros) -- when the login session ends (SSH
+# disconnects, terminal closes, etc.), logind kills every process that
+# session's cgroup still owns, and nohup only blocks SIGHUP, not this.
+# Running as a systemd service instead means the process belongs to
+# systemd's own scope, entirely independent of any login session, so
+# nothing about an SSH session ending can ever touch it.
+
+# Uncomment and adjust if the panel should run as a dedicated non-root user.
+# IMPORTANT: a dedicated system user created via `useradd --system` (no
+# login shell, no home directory) has NO $HOME environment variable under
+# systemd -- previously this crashed the panel on every single start,
+# since it used $HOME to resolve a default data directory. The panel now
+# falls back gracefully instead of crashing (see api/config/config.go),
+# but setting DATA_DIR explicitly below is still the recommended, most
+# predictable configuration regardless of which user runs the service.
+# User=mwp
+# Group=mwp
+
+# Recommended: pin the data directory explicitly rather than relying on
+# any HOME-derived default. Must be writable by whichever user/group runs
+# this service (root by default, or User=/Group= above if set).
+Environment=DATA_DIR=/opt/mwp/data
+
+[Install]
+WantedBy=multi-user.target

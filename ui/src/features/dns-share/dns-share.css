@@ -1,0 +1,339 @@
+/* Scoped styles for the public DNS share landing page -- mirrors
+   v2ray-sub's own design language (fixed dark theme regardless of the
+   panel's own light/dark toggle, since every visitor is an end customer,
+   not an admin) so DNS reads as one coherent product with the other
+   protocols instead of a leftover plain-shadcn page. A distinct accent hue
+   (teal/cyan rather than V2Ray's purple) keeps the two share pages visually
+   distinguishable at a glance while sharing the same structural language.
+   Class names are prefixed with dnss- to avoid colliding with any global
+   class name elsewhere in the app. */
+
+.dnss-root {
+  --dnss-bg: #071018;
+  --dnss-card-bg: #0f1c24;
+  --dnss-text: #f1f8fa;
+  --dnss-text-muted: #8fa6ac;
+  --dnss-primary: #14b8a6;
+  --dnss-secondary: #38bdf8;
+  --dnss-success: #4ade80;
+  --dnss-warning: #fbbf24;
+  --dnss-danger: #fb7185;
+
+  background: var(--dnss-bg);
+  color: var(--dnss-text);
+  min-height: 100vh;
+  font-family:
+    'Vazirmatn',
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  direction: rtl;
+  padding: 20px 14px 48px;
+}
+
+@media (min-width: 420px) {
+  .dnss-root {
+    padding: 32px 20px 64px;
+  }
+}
+
+.dnss-container {
+  max-width: 560px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dnss-card {
+  background: linear-gradient(
+    155deg,
+    color-mix(in srgb, var(--dnss-card-bg) 96%, white 4%) 0%,
+    var(--dnss-card-bg) 60%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+@media (min-width: 420px) {
+  .dnss-card {
+    padding: 24px;
+  }
+}
+
+.dnss-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+/* ---------- Loading state ---------- */
+.dnss-center-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.dnss-spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--dnss-primary);
+  animation: dnss-spin 0.8s linear infinite;
+}
+
+@keyframes dnss-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Header ---------- */
+.dnss-header {
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.dnss-header-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--dnss-primary);
+}
+
+.dnss-header-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.dnss-header-sub {
+  font-size: 12.5px;
+  color: var(--dnss-text-muted);
+  margin-top: 4px;
+}
+
+/* ---------- Status card ---------- */
+.dnss-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dnss-row + .dnss-row {
+  margin-top: 10px;
+}
+
+.dnss-label {
+  font-size: 12.5px;
+  color: var(--dnss-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dnss-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dnss-value-mono {
+  font-family: monospace;
+  font-size: 12px;
+  direction: ltr;
+}
+
+.dnss-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dnss-pill-active {
+  background: color-mix(in srgb, var(--dnss-success) 18%, transparent);
+  color: var(--dnss-success);
+}
+
+.dnss-pill-inactive {
+  background: color-mix(in srgb, var(--dnss-text-muted) 18%, transparent);
+  color: var(--dnss-text-muted);
+}
+
+.dnss-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--dnss-success);
+  position: relative;
+}
+
+.dnss-pulse-dot.dnss-dot-muted {
+  background: var(--dnss-text-muted);
+}
+
+.dnss-pulse-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: inherit;
+  animation: dnss-pulse 1.6s ease-out infinite;
+}
+
+@keyframes dnss-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+.dnss-meter-value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.dnss-meter-note {
+  font-size: 12px;
+  color: var(--dnss-text-muted);
+  margin-top: 2px;
+}
+
+.dnss-progress-track {
+  margin-top: 10px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.dnss-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--dnss-primary), var(--dnss-secondary));
+  transition: width 0.5s ease;
+}
+
+.dnss-badge-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--dnss-text-muted);
+}
+
+.dnss-divider {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+/* ---------- Register IP action card ---------- */
+.dnss-btn-primary {
+  width: 100%;
+  background: var(--dnss-primary);
+  color: #04201c;
+  border: none;
+  border-radius: 11px;
+  padding: 11px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition:
+    filter 0.15s ease,
+    transform 0.1s ease;
+}
+
+.dnss-btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.dnss-btn-primary:active {
+  transform: scale(0.98);
+}
+
+.dnss-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ---------- FAQ / request-service card (shares .dnss-card look) ---------- */
+.dnss-textarea {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--dnss-text);
+  border-radius: 11px;
+  padding: 11px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  min-height: 72px;
+  transition: border-color 0.15s ease;
+}
+
+.dnss-textarea:focus {
+  border-color: var(--dnss-primary);
+}
+
+.dnss-textarea::placeholder {
+  color: var(--dnss-text-muted);
+}
+
+/* ---------- Toast ---------- */
+.dnss-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  background: #10202a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--dnss-text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 20px;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: dnss-toast-in 0.2s ease;
+}
+
+@keyframes dnss-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}

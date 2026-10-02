@@ -1,0 +1,79 @@
+.DS_Store
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+.env
+
+# Test binary, built with `go test -c`
+*.test
+
+# database files
+*.db
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Log files
+*.log
+
+# IDEs and editors
+.idea
+.project
+.classpath
+.c9/
+*.iml
+*.launch
+.settings/
+*.sublime-workspace
+
+# Dependency directories (remove the comment below to include it)
+vendor
+.tanstack
+
+# Go workspace file
+go.work
+
+# Logs
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+*.sqlite
+*.xlsx
+
+# Internal planning doc -- contains raw server/SSH/panel credentials,
+# must never be committed to a public (or any shared) repository.
+PLAN-6-FAZ.md
+
+# Local build output -- compiled binaries from `go build`/cross-compiles
+# have no extension on Linux/macOS, so they're easy to leave behind in the
+# working tree after a local test build; never commit them.
+/api/mwp
+/api/mwp_*
+*.gz
+deploy-artifacts/
+
+# Local Claude Code workspace state -- machine-specific permissions/locks,
+# not part of the project.
+/.claude/

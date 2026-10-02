@@ -1,0 +1,120 @@
+import { useEffect, useRef, useState } from 'react'
+import { Peer } from '@/schema/peers.ts'
+import { CopyIcon } from 'lucide-react'
+import { toast } from 'sonner'
+import { copyToClipboard } from '@/lib/clipboard.ts'
+import { usePeerConfigQuery } from '@/hooks/peers/usePeerConfigQuery.ts'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Skeleton } from '@/components/ui/skeleton'
+
+interface Props {
+  open: boolean
+  onOpenChange: (state: boolean) => void
+  currentRow: Peer
+  download?: boolean
+}
+
+export function PeersConfigDialog({
+  open,
+  onOpenChange,
+  currentRow,
+  download = false,
+}: Props) {
+  const { data: peerConfigBlob, isLoading } = usePeerConfigQuery(
+    currentRow.id,
+    {
+      enabled: open,
+    }
+  )
+  const [configText, setConfigText] = useState<string>('')
+  const hasDownloaded = useRef(false)
+
+  useEffect(() => {
+    if (peerConfigBlob) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result as string
+        setConfigText(result)
+      }
+      reader.readAsText(new Blob([peerConfigBlob]))
+
+      if (download && !hasDownloaded.current) {
+        hasDownloaded.current = true
+        const blob = new Blob([peerConfigBlob], {
+          type: 'application/octet-stream',
+        })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${currentRow.name || 'peer'}.conf`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+
+        onOpenChange(false)
+      }
+    }
+  }, [peerConfigBlob, download, currentRow.name, onOpenChange])
+
+  const handleCopy = async () => {
+    if (!configText) return
+    const succeeded = await copyToClipboard(configText)
+    if (succeeded) {
+      toast.success('در کلیپ‌بورد کپی شد.', { duration: 5000 })
+    } else {
+      toast.error('کپی در کلیپ‌بورد ناموفق بود.', { duration: 5000 })
+    }
+  }
+
+  if (download) return null
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className='sm:max-w-2xl'>
+        <DialogHeader className='text-left'>
+          <DialogTitle>کانفیگ</DialogTitle>
+          <DialogDescription>کانفیگ زیر را کپی کنید.</DialogDescription>
+        </DialogHeader>
+
+        <div className='bg-muted relative max-h-[60vh] overflow-auto rounded-md px-4 py-3'>
+          {isLoading ? (
+            <Skeleton className='h-[200px] w-full' />
+          ) : configText ? (
+            <pre className='text-sm break-words whitespace-pre-wrap'>
+              <code>{configText}</code>
+            </pre>
+          ) : (
+            <div className='text-muted-foreground'>
+              کانفیگ در دسترس نیست
+            </div>
+          )}
+
+          {!isLoading && configText && (
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={handleCopy}
+              className='absolute top-2 right-2'
+            >
+              <CopyIcon className='mr-1 h-4 w-4' />
+              کپی
+            </Button>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>بستن</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}

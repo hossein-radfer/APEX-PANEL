@@ -1,0 +1,20 @@
+/* Scoped RTL + Persian-font styling for the Reports section's content
+   area. The rest of the panel is English/LTR (per the app's existing
+   layout), so this stays scoped to .reports-root rather than touching the
+   global stylesheet -- mirrors the v2ray-sub feature's own
+   v2sub-root/font-loading pattern (see features/v2ray-sub/v2ray-sub.css)
+   which already proved this approach in this codebase. */
+
+.reports-root {
+  direction: rtl;
+  font-family:
+    'Vazirmatn',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+
+.reports-root [dir='rtl'] {
+  text-align: right;
+}
