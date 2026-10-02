@@ -16,9 +16,8 @@ Telegram bot integration — all from one admin/reseller web UI.
 - [Screenshots](#screenshots)
 - [System Requirements](#system-requirements)
 - [Getting Started](#getting-started)
-  - [Binary Releases](#binary-releases)
-  - [Docker](#docker)
-  - [Docker Compose](#docker-compose)
+  - [One-Command Install (Ubuntu)](#one-command-install-ubuntu)
+  - [Other Platforms](#other-platforms)
 - [Build From Source](#build-from-source)
   - [Prerequisites](#prerequisites)
   - [Project Setup](#project-setup)
@@ -120,10 +119,25 @@ Actual needs scale with how many peers/accounts and resellers you manage, and ho
 
 ## Getting Started
 
-### Binary Releases
+### One-Command Install (Ubuntu)
 
-Download the latest binary release for your platform from the
-[Releases](https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest) page.
+The fastest way to get ApexPanel running on a fresh Ubuntu 22.04/24.04 server. This single command installs
+Go and Node.js if needed, clones the repository, builds the frontend and backend, and sets up ApexPanel as a
+systemd service — tested end to end on a clean server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hossein-radfer/APEX-PANEL/main/deploy/quick-install.sh | sudo bash
+```
+
+To activate with a license key on first boot (optional — you can also activate later from the web UI), append it
+after `--`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hossein-radfer/APEX-PANEL/main/deploy/quick-install.sh | sudo bash -s -- --license-key MWP-XXXX-XXXX-XXXX-XXXX
+```
+
+See [`deploy/install.sh --help`](deploy/install.sh) (run after the clone) for every other option, including
+custom admin credentials and `--db-dialect postgres`.
 
 > [!TIP]
 > Default port for the web panel is `3000`.
@@ -138,64 +152,11 @@ Download the latest binary release for your platform from the
 > account is seeded). Changing them afterward requires using the panel's own account settings page, not the env.
 > When changing your password from the panel's Settings page, it must be **at least 8 characters** long.
 
-#### Linux
+### Other Platforms
 
-```bash
-curl -fSLo mwp https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest/download/mwp.linux.$(uname -m)
-sudo install -v -o root -g root -m 755 mwp /usr/local/bin/mwp
-rm -f mwp
-mwp
-```
-
-#### macOS
-
-```bash
-curl -fSLo mwp https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest/download/mwp.darwin.$(uname -m)
-sudo install -v -o root -g root -m 755 mwp /usr/local/bin/mwp
-rm -f mwp
-mwp
-```
-
-#### Windows
-
-Download the latest binary release from [here](https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest) and run it by
-**double-clicking the executable** or using PowerShell:
-
-```powershell
-.\mwp.windows.amd64.exe
-```
-
-### Docker
-
-```bash
-docker run -d \
-  --name mwp \
-  -p 3000:3000 \
-  -v mwp-data:/var/www/mwp \
-  -e ADMIN_USERNAME=ApexPanel \
-  -e ADMIN_PASSWORD=change-me \
-  YOUR-DOCKERHUB-USERNAME/mwp:latest
-```
-
-> **Note**
-> If the Docker registry is not accessible, use the GitHub image registry instead:
-> `ghcr.io/YOUR-DOCKERHUB-USERNAME/mwp:latest`
-
-### Docker Compose
-
-```yaml
-version: '3.8'
-services:
-  mwp:
-    image: YOUR-DOCKERHUB-USERNAME/mwp:latest
-    ports:
-      - 3000:3000
-    environment:
-      ADMIN_USERNAME: ApexPanel
-      ADMIN_PASSWORD: change-me
-    volumes:
-      - mwp-data:/var/www/mwp
-```
+Pre-built binary releases (Linux/macOS/Windows) and a Docker image are planned but not published yet — for now,
+build from source (see [Build From Source](#build-from-source) below), or use the one-command installer above on
+Ubuntu.
 
 ```bash
 docker-compose up -d
@@ -216,7 +177,7 @@ docker-compose up -d
 ### Project Setup
 
 ```bash
-git clone https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO.git
+git clone https://github.com/hossein-radfer/APEX-PANEL.git
 cd mwp
 
 cp api/config/.env.example api/.env
@@ -283,7 +244,7 @@ A few of the panel's main sections worth knowing about:
 ## Updating
 
 1. Back up your database (the sqlite `.db` file, or your PostgreSQL database) and `.env` file first
-2. Download the new binary from [Releases](https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest)
+2. Download the new binary from [Releases](https://github.com/hossein-radfer/APEX-PANEL/releases/latest)
 3. Stop the running service (`systemctl stop mwp` if installed via [`deploy/install.sh`](deploy/install.sh) —
    check `systemctl list-units | grep mwp` if you installed it a different way — or stop your Docker container)
 4. Replace the old binary with the new one
@@ -381,7 +342,7 @@ are all prohibited. See [`LICENSE`](LICENSE) for the full terms.
 
 ## Contact
 
-Created by [YOUR-NAME](https://github.com/YOUR-GITHUB-USERNAME) — feel free to reach out via GitHub issues or pull requests.
+Created by [hossein-radfer](https://github.com/hossein-radfer) — feel free to reach out via GitHub issues or pull requests.
 
 <br>
 
@@ -508,10 +469,25 @@ ApexPanel یک باینری سبک و واحد Go است — روی پلن‌ه�
 
 ## شروع به کار
 
-### دانلود باینری
+### نصب با یک دستور (اوبونتو)
 
-آخرین نسخه‌ی باینری را برای پلتفرم خود از صفحه‌ی
-[Releases](https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest) دانلود کنید.
+سریع‌ترین راه برای راه‌اندازی ApexPanel روی یک سرور تازه‌ی اوبونتو ۲۲.۰۴/۲۴.۰۴. همین یک دستور، در صورت نیاز
+Go و Node.js را نصب می‌کند، پروژه را کلون می‌کند، فرانت‌اند و بک‌اند را می‌سازد، و ApexPanel را به‌عنوان یک
+سرویس systemd راه‌اندازی می‌کند -- به‌طور کامل روی یک سرور تمیز تست شده است:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hossein-radfer/APEX-PANEL/main/deploy/quick-install.sh | sudo bash
+```
+
+برای فعال‌سازی با کلید لایسنس در همان اولین اجرا (اختیاری -- بعداً هم می‌توانید از رابط وب فعال‌سازی کنید)،
+آن را بعد از `--` اضافه کنید:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hossein-radfer/APEX-PANEL/main/deploy/quick-install.sh | sudo bash -s -- --license-key MWP-XXXX-XXXX-XXXX-XXXX
+```
+
+برای فهرست کامل سایر گزینه‌ها (نام‌کاربری/رمز دلخواه، `--db-dialect postgres`)، به
+[`deploy/install.sh --help`](deploy/install.sh) مراجعه کنید (بعد از کلون شدن پروژه قابل‌اجراست).
 
 > [!TIP]
 > پورت پیش‌فرض پنل وب `3000` است.
@@ -526,68 +502,11 @@ ApexPanel یک باینری سبک و واحد Go است — روی پلن‌ه�
 > پس از آن باید از طریق صفحه‌ی تنظیمات حساب خود پنل انجام شود، نه از طریق env.
 > هنگام تغییر رمز عبور از صفحه‌ی تنظیمات پنل، رمز جدید باید **حداقل ۸ کاراکتر** باشد.
 
-#### لینوکس
+### سایر پلتفرم‌ها
 
-```bash
-curl -fSLo mwp https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest/download/mwp.linux.$(uname -m)
-sudo install -v -o root -g root -m 755 mwp /usr/local/bin/mwp
-rm -f mwp
-mwp
-```
-
-#### مک‌اواس
-
-```bash
-curl -fSLo mwp https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest/download/mwp.darwin.$(uname -m)
-sudo install -v -o root -g root -m 755 mwp /usr/local/bin/mwp
-rm -f mwp
-mwp
-```
-
-#### ویندوز
-
-آخرین نسخه‌ی باینری را از [اینجا](https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest) دانلود کنید و با
-**دابل‌کلیک روی فایل اجرایی** یا از طریق PowerShell اجرا کنید:
-
-```powershell
-.\mwp.windows.amd64.exe
-```
-
-### Docker
-
-```bash
-docker run -d \
-  --name mwp \
-  -p 3000:3000 \
-  -v mwp-data:/var/www/mwp \
-  -e ADMIN_USERNAME=ApexPanel \
-  -e ADMIN_PASSWORD=change-me \
-  YOUR-DOCKERHUB-USERNAME/mwp:latest
-```
-
-> **توجه**
-> اگر رجیستری Docker در دسترس نبود، از رجیستری ایمیج گیت‌هاب استفاده کنید:
-> `ghcr.io/YOUR-DOCKERHUB-USERNAME/mwp:latest`
-
-### Docker Compose
-
-```yaml
-version: '3.8'
-services:
-  mwp:
-    image: YOUR-DOCKERHUB-USERNAME/mwp:latest
-    ports:
-      - 3000:3000
-    environment:
-      ADMIN_USERNAME: ApexPanel
-      ADMIN_PASSWORD: change-me
-    volumes:
-      - mwp-data:/var/www/mwp
-```
-
-```bash
-docker-compose up -d
-```
+انتشار باینری‌های از پیش ساخته‌شده (لینوکس/مک/ویندوز) و یک ایمیج Docker در برنامه هستند ولی هنوز منتشر
+نشده‌اند -- فعلاً از سورس بسازید (بخش [ساخت از سورس](#ساخت-از-سورس) پایین‌تر)، یا از نصب یک‌دستوری بالا
+روی اوبونتو استفاده کنید.
 
 ---
 
@@ -604,7 +523,7 @@ docker-compose up -d
 ### راه‌اندازی پروژه
 
 ```bash
-git clone https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO.git
+git clone https://github.com/hossein-radfer/APEX-PANEL.git
 cd mwp
 
 cp api/config/.env.example api/.env
@@ -672,7 +591,7 @@ ApexPanel کاملاً از طریق متغیرهای محیطی پیکربند�
 ## آپدیت پنل
 
 ۱. ابتدا از دیتابیس خود (فایل `.db` برای SQLite، یا دیتابیس PostgreSQL) و فایل `.env` بکاپ بگیرید
-۲. آخرین نسخه‌ی باینری را از [Releases](https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO/releases/latest) دانلود کنید
+۲. آخرین نسخه‌ی باینری را از [Releases](https://github.com/hossein-radfer/APEX-PANEL/releases/latest) دانلود کنید
 ۳. سرویس در حال اجرا را متوقف کنید (`systemctl stop mwp` اگر از طریق
    [`deploy/install.sh`](deploy/install.sh) نصب کرده‌اید — در غیر این صورت با
    `systemctl list-units | grep mwp` نام دقیق سرویس را چک کنید — یا کانتینر Docker خود را متوقف کنید)
@@ -772,5 +691,5 @@ ApexPanel **سورس-باز-قابل‌مشاهده (source-available)** است�
 
 ## تماس
 
-ساخته‌شده توسط [YOUR-NAME](https://github.com/YOUR-GITHUB-USERNAME) — برای تماس، از ایشوها یا Pull Requestهای
+ساخته‌شده توسط [hossein-radfer](https://github.com/hossein-radfer) — برای تماس، از ایشوها یا Pull Requestهای
 گیت‌هاب استفاده کنید.

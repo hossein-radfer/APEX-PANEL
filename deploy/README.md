@@ -30,7 +30,7 @@ different failure mode from a clean `SIGTERM`.
 From the repository root:
 
 ```bash
-git clone https://github.com/YOUR-GITHUB-USERNAME/YOUR-REPO.git
+git clone https://github.com/hossein-radfer/APEX-PANEL.git
 cd mwp
 
 # Build the frontend first -- the Go binary embeds ui/dist directly.
