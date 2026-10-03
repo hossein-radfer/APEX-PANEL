@@ -24,7 +24,7 @@
 #   sudo ./install.sh \
 #     --license-key MWP-XXXX-XXXX-XXXX-XXXX \
 #     [--binary ./mwp] \
-#     [--admin-username ApexPanel] [--admin-password change-me] \
+#     [--admin-username ApexPanel] [--admin-password your-own-password] \
 #     [--db-dialect sqlite] \
 #     [--license-server-url http://203.0.113.10:3131] [--dev-mode]
 #
@@ -46,7 +46,14 @@ set -euo pipefail
 BINARY="./mwp"
 DB_DIALECT="sqlite"
 ADMIN_USERNAME="ApexPanel"
-ADMIN_PASSWORD="change-me"
+# Explicit default password, per the operator's own informed decision --
+# NOT a secret, publicly visible in this script, and therefore guessable
+# by anyone pointing a browser at this install's port 3000. The final
+# summary below prints a loud warning to change it immediately after
+# first login; pass --admin-password yourself (or leave this variable
+# empty here to fall back to AdminSeed's own random-password generation,
+# api/dataservice/seeds/admin.go) if you want it unguessable from the start.
+ADMIN_PASSWORD="ApexPanel"
 LICENSE_KEY=""
 LICENSE_PUBLIC_KEY=""
 LICENSE_SERVER_URL=""
@@ -57,7 +64,7 @@ usage() {
 Usage: sudo ./install.sh [options]
   --binary PATH                Path to the pre-built mwp binary (default: ./mwp)
   --admin-username NAME        Default admin username (default: ApexPanel)
-  --admin-password PASS        Default admin password (default: change-me)
+  --admin-password PASS        Admin password (default: random, generated and printed at the end of install)
   --db-dialect sqlite|postgres Database dialect (default: sqlite)
   --license-key KEY            License key to activate with on first boot (optional)
   --license-public-key KEY     Ed25519 public key from license-panel's keygen (optional)
@@ -176,17 +183,47 @@ systemctl enable mwp
 
 echo "==> Starting mwp"
 systemctl restart mwp
-sleep 1
+sleep 2
 systemctl status mwp --no-pager -l || true
+
+# When ADMIN_PASSWORD was left empty, AdminSeed (api/dataservice/seeds/
+# admin.go) generates a random one and prints it to the process's own
+# stdout exactly once, on this very first start -- which systemd has
+# already captured into the journal by now (the sleep above gives the Go
+# binary's own goroutines time to run the seed before this reads back the
+# log). Read it back here instead of ever assuming/printing a fixed
+# string, so what's shown below is always the password that actually
+# works -- a confirmed, now-fixed bug in an earlier revision of this
+# script printed the literal default "change-me" unconditionally even
+# though AdminSeed never actually stored that value anywhere.
+DISPLAY_PASSWORD="$ADMIN_PASSWORD"
+if [[ -z "$DISPLAY_PASSWORD" ]]; then
+  GENERATED_LINE="$(journalctl -u mwp --no-pager 2>/dev/null | grep -F 'password:' | tail -1)"
+  DISPLAY_PASSWORD="$(echo "$GENERATED_LINE" | awk -F': ' '{print $2}' | tr -d '[:space:]')"
+  if [[ -z "$DISPLAY_PASSWORD" ]]; then
+    DISPLAY_PASSWORD="(not found in the log yet -- run: journalctl -u mwp | grep -A2 'password:')"
+  fi
+fi
+
+SERVER_IP="$(curl -fsSL --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
 
 echo ""
 echo "============================================================"
-echo " Done. MWPanel should now be reachable at:"
-echo "   http://<server-ip>:3000"
+echo " Done. MWPanel is now running. Here is everything you need:"
 echo ""
-echo " Default admin credentials: $ADMIN_USERNAME / $ADMIN_PASSWORD"
-echo " (only takes effect on a genuinely empty Admin table -- change"
-echo " it from inside the panel after first login)"
+echo "   URL:      http://$SERVER_IP:3000"
+echo "   Username: $ADMIN_USERNAME"
+echo "   Password: $DISPLAY_PASSWORD"
+echo ""
+if [[ "$DISPLAY_PASSWORD" == "ApexPanel" ]]; then
+  echo " !! WARNING: you are using the PUBLIC DEFAULT password. Anyone"
+  echo " !! who finds this install's IP can log in right now. Change"
+  echo " !! it from inside the panel (Settings) THE MOMENT you log in."
+else
+  echo " This password is NOT stored anywhere recoverable (only its"
+  echo " bcrypt hash is in the database) -- save it now. Change it"
+  echo " from inside the panel after your first login."
+fi
 echo ""
 if [[ -z "$LICENSE_KEY" ]]; then
   echo " No license key was provided -- the panel will show the"
