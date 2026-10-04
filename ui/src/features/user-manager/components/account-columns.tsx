@@ -6,6 +6,7 @@ import { IconRestore } from '@tabler/icons-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useResetUserManagerAccountUsageMutation } from '@/hooks/user-manager/useResetUserManagerAccountUsageMutation.ts'
+import { getApiErrorMessage } from '@/lib/api-error.ts'
 import { useUpdateUserManagerAccountStatusMutation } from '@/hooks/user-manager/useUpdateUserManagerAccountStatusMutation.ts'
 import { Badge } from '@/components/ui/badge.tsx'
 import { Button } from '@/components/ui/button.tsx'
@@ -217,8 +218,11 @@ export const accountColumns: ColumnDef<UserManagerAccount>[] = [
               duration: 5000,
             })
           },
-          onError: () => {
+          onError: (error) => {
             setDialogOpen(false)
+            toast.error(
+              getApiErrorMessage(error, 'بازنشانی مصرف حساب ناموفق بود.')
+            )
           },
         })
       }

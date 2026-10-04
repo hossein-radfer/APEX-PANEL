@@ -1106,6 +1106,67 @@ func (s *V2RayPackageService) ResetUsage(id uint, resellerID *uint) error {
 	return nil
 }
 
+// RenewPackage resets a package's remaining days exactly like ResetUsage
+// resets its volume: StartAt is moved to now and ExpireAt is recomputed
+// from the package's existing DurationDays (mirroring CreatePackage's own
+// StartAt+DurationDays -> ExpireAt formula), so "N days remaining" reads
+// the full DurationDays again starting today. A confirmed, reported gap:
+// UpdatePackage's own DurationDays handler recomputes ExpireAt anchored on
+// the package's EXISTING StartAt by design (see its own doc comment) --
+// correct for "fix the duration," wrong for "renew this subscription,"
+// which needs a fresh StartAt too. No dedicated action existed for the
+// latter; an admin's only option was to re-derive and PUT a new
+// DurationDays by hand.
+//
+// Status/suspension handling mirrors ResetUsage: a package previously
+// auto-suspended by quota (SuspendedByQuota) is reactivated, since a
+// renewal is exactly the kind of admin action that should also lift a
+// quota suspension (consistent with ResetUsage's own rationale) -- a
+// package an admin suspended on purpose (Status="suspended",
+// SuspendedByQuota=false) is left exactly as they set it.
+func (s *V2RayPackageService) RenewPackage(id uint, resellerID *uint) (*schema.V2RayPackageResponse, error) {
+	pkg, err := s.getPackageByIDScoped(id, resellerID)
+	if err != nil {
+		return nil, fmt.Errorf("package not found: %w", err)
+	}
+
+	now := time.Now()
+	expireAt := now.AddDate(0, 0, pkg.DurationDays)
+
+	updates := map[string]interface{}{
+		"start_at":  now,
+		"expire_at": expireAt,
+	}
+	wasSuspendedByQuota := pkg.SuspendedByQuota
+	if wasSuspendedByQuota {
+		updates["status"] = "active"
+		updates["suspended_by_quota"] = false
+		updates["was_active_before_suspend"] = false
+		updates["suspended_by_reseller_quota"] = false
+	}
+
+	if err := s.db.Model(&model.V2RayPackage{}).Where("id = ?", pkg.ID).Updates(updates).Error; err != nil {
+		s.logger.Error("failed to renew v2ray package", zap.Uint("package_id", pkg.ID), zap.Error(err))
+		return nil, fmt.Errorf("failed to renew package: %w", err)
+	}
+
+	pkg.StartAt = &now
+	pkg.ExpireAt = &expireAt
+	if wasSuspendedByQuota {
+		pkg.Status = "active"
+		pkg.SuspendedByQuota = false
+		pkg.WasActiveBeforeSuspend = false
+		pkg.SuspendedByResellerQuota = false
+		s.applyPackageStateToLocations(pkg)
+	}
+
+	resp, err := s.transformPackageToResponse(pkg)
+	if err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (s *V2RayPackageService) DeletePackage(id uint, resellerID *uint) error {
 	pkg, err := s.getPackageByIDScoped(id, resellerID)
 	if err != nil {

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { RotateCcw as IconRestore, TriangleAlertIcon } from 'lucide-react'
 import { toast } from 'sonner'
+import { getApiErrorMessage } from '@/lib/api-error.ts'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -26,11 +27,17 @@ export const ResetUsagesDialog = ({
   const [open, setOpen] = useState(false)
 
   const handleConfirm = async () => {
-    await resetUsages()
-    toast.success('مصرف وایرگاردها با موفقیت بازنشانی شد', {
-      duration: 5000,
-    })
-    setOpen(false)
+    try {
+      await resetUsages()
+      toast.success('مصرف وایرگاردها با موفقیت بازنشانی شد', {
+        duration: 5000,
+      })
+      setOpen(false)
+    } catch (error) {
+      toast.error(
+        getApiErrorMessage(error, 'بازنشانی مصرف وایرگاردها ناموفق بود.')
+      )
+    }
   }
 
   return (

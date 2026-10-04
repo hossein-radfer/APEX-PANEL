@@ -5,6 +5,8 @@ import { IconRestore } from '@tabler/icons-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useResetV2RayPackageUsageMutation } from '@/hooks/v2ray/useResetV2RayPackageUsageMutation.ts'
+import { useRenewV2RayPackageMutation } from '@/hooks/v2ray/useRenewV2RayPackageMutation.ts'
+import { getApiErrorMessage } from '@/lib/api-error.ts'
 import { Button } from '@/components/ui/button.tsx'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ColoredBadge } from '@/features/shared-components/status-badge.tsx'
@@ -82,8 +84,11 @@ export const v2rayColumns: ColumnDef<V2RayPackage>[] = [
               duration: 5000,
             })
           },
-          onError: () => {
+          onError: (error) => {
             setDialogOpen(false)
+            toast.error(
+              getApiErrorMessage(error, 'بازنشانی مصرف بسته ناموفق بود.')
+            )
           },
         })
       }
@@ -141,9 +146,70 @@ export const v2rayColumns: ColumnDef<V2RayPackage>[] = [
       <DataTableColumnHeader column={column} title='انقضا' />
     ),
     cell: ({ row }) => {
-      const { expire_at } = row.original
+      const [dialogOpen, setDialogOpen] = useState(false)
+      const renewMutation = useRenewV2RayPackageMutation()
+      const pkg = row.original
+      // Admin-only, same rule as reset-usage above: a reseller must not be
+      // able to grant themselves a free renewal.
+      const role = useAuthStore((state) => state.auth.admin?.role)
+      const isReseller = role === 'reseller'
+
+      const expireDisplay = (
+        <div className='w-fit text-nowrap'>
+          {pkg.expire_at ? pkg.expire_at : 'هرگز'}
+        </div>
+      )
+
+      if (isReseller || !pkg.expire_at) {
+        return expireDisplay
+      }
+
+      const handleRenew = async () => {
+        renewMutation.mutateAsync(pkg.id, {
+          onSuccess: () => {
+            setDialogOpen(false)
+            toast.success('مدت بسته با موفقیت بازنشانی شد', {
+              duration: 5000,
+            })
+          },
+          onError: (error) => {
+            setDialogOpen(false)
+            toast.error(
+              getApiErrorMessage(error, 'بازنشانی مدت بسته ناموفق بود.')
+            )
+          },
+        })
+      }
+
       return (
-        <div className='w-fit text-nowrap'>{expire_at ? expire_at : 'هرگز'}</div>
+        <SimpleDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          title='بازنشانی مدت بسته؟'
+          description='این کار روزهای باقی‌مانده را به مدت کامل بسته (از امروز) بازنشانی می‌کند. آیا مطمئن هستید؟'
+          actionText='تأیید بازنشانی'
+          mutateAsync={handleRenew}
+          trigger={
+            <div className='flex items-center gap-3'>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant='ghost'
+                    size='icon'
+                    className='text-muted-foreground hover:text-foreground h-8 w-8'
+                    aria-label='بازنشانی مدت'
+                  >
+                    <IconRestore className='h-4 w-4' />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side='top' align='center'>
+                  <p>بازنشانی مدت (روز)</p>
+                </TooltipContent>
+              </Tooltip>
+              {expireDisplay}
+            </div>
+          }
+        />
       )
     },
     meta: {

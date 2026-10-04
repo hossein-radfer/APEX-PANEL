@@ -129,6 +129,10 @@ export const resetV2RayPackageUsage = async (id: number): Promise<void> => {
   await axiosInstance.patch(`/v2ray-package/${id}/reset-usage`)
 }
 
+export const renewV2RayPackage = async (id: number): Promise<void> => {
+  await axiosInstance.patch(`/v2ray-package/${id}/renew`)
+}
+
 export const bulkDeleteV2RayPackages = async (
   ids: number[]
 ): Promise<{ deleted: number[]; failedCount: number }> => {

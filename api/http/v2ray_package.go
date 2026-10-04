@@ -384,6 +384,44 @@ func (c *V2RayPackageController) ResetPackageUsage(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, schema.OkBasicResponse)
 }
 
+// RenewPackage mirrors ResetPackageUsage's shape exactly, for the
+// companion "V2Ray needs a Reset Days button too" request -- see
+// V2RayPackageService.RenewPackage's own doc comment for why a dedicated
+// action exists instead of reusing UpdatePackage's DurationDays handler.
+func (c *V2RayPackageController) RenewPackage(ctx echo.Context) error {
+	id, err := strconv.Atoi(ctx.Param("id"))
+	if err != nil {
+		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
+	}
+
+	// Admin-only, per the admin's own explicit requirement -- see
+	// requireAdminScope's own doc comment (wg_peer.go) for why a reseller
+	// must never be able to zero their own usage; the same rule applies to
+	// renewing days for free, since both are a free top-up a reseller must
+	// not be able to grant themselves.
+	if _, scopeErr := requireAdminScope(ctx); scopeErr != nil {
+		return scopeErr
+	}
+
+	pkg, err := c.packageService.RenewPackage(uint(id), nil)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ctx.JSON(http.StatusNotFound, schema.ErrorResponse{StatusCode: http.StatusNotFound, Status: "error", Message: "v2ray package not found"})
+		}
+		c.logger.Error("failed to renew v2ray package", zap.Error(err))
+		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{
+			StatusCode: http.StatusInternalServerError,
+			Status:     "error",
+			Message:    "failed to renew package: " + err.Error(),
+		})
+	}
+
+	return ctx.JSON(http.StatusOK, schema.BasicResponseData[schema.V2RayPackageResponse]{
+		BasicResponse: schema.OkBasicResponse,
+		Data:          *pkg,
+	})
+}
+
 func (c *V2RayPackageController) DeletePackage(ctx echo.Context) error {
 	id, err := strconv.Atoi(ctx.Param("id"))
 	if err != nil {

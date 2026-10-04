@@ -35,22 +35,32 @@ func Run() {
 
 		switch choice {
 		case "1":
-			actionStatus()
+			actionUpdate(reader)
 		case "2":
-			actionStart()
+			actionDeletePanel(reader)
 		case "3":
-			actionStop()
+			actionReinstall(reader)
 		case "4":
-			actionRestart()
+			actionBackup()
 		case "5":
 			actionResetAdmin(reader)
 		case "6":
-			actionChangePort(reader)
+			actionDisableOtp()
 		case "7":
-			actionViewLogs(reader)
+			actionStatus()
 		case "8":
-			actionBackup()
+			actionAutoSSL(reader)
 		case "9":
+			actionChangePort(reader)
+		case "10":
+			actionRestart()
+		case "11":
+			actionViewLogs(reader)
+		case "12":
+			actionStart()
+		case "13":
+			actionStop()
+		case "14":
 			actionRestore(reader)
 		case "0", "q", "Q":
 			fmt.Println("Goodbye.")
@@ -63,20 +73,33 @@ func Run() {
 	}
 }
 
+// printMenu's numbering follows the admin's own originally-specified
+// 11-item order (update, delete, reinstall, backup, admin credentials,
+// disable 2FA, status, auto SSL, change port, restart, view logs) first,
+// with the remaining actions this menu already had before that spec
+// (start/stop individually, restore) appended after -- renumbering the
+// pre-existing items would have silently broken anyone's muscle memory
+// or scripted input from the menu's first shipped version for no benefit,
+// since the spec itself never required a specific position for them.
 func printMenu() {
 	fmt.Println()
 	fmt.Println("========================================")
 	fmt.Println(" MWPanel Management Menu")
 	fmt.Println("========================================")
-	fmt.Println(" 1) Service status")
-	fmt.Println(" 2) Start service")
-	fmt.Println(" 3) Stop service")
-	fmt.Println(" 4) Restart service")
+	fmt.Println(" 1) Update panel (pull latest + rebuild)")
+	fmt.Println(" 2) Delete panel (irreversible)")
+	fmt.Println(" 3) Reinstall panel (keeps your data)")
+	fmt.Println(" 4) Create a database backup")
 	fmt.Println(" 5) Reset admin credentials")
-	fmt.Println(" 6) Change listen port")
-	fmt.Println(" 7) View live logs")
-	fmt.Println(" 8) Create a database backup")
-	fmt.Println(" 9) Restore a database backup")
+	fmt.Println(" 6) Disable two-factor login")
+	fmt.Println(" 7) Service status")
+	fmt.Println(" 8) Get a free SSL certificate (nginx + Let's Encrypt)")
+	fmt.Println(" 9) Change listen port")
+	fmt.Println("10) Restart service")
+	fmt.Println("11) View live logs")
+	fmt.Println("12) Start service")
+	fmt.Println("13) Stop service")
+	fmt.Println("14) Restore a database backup")
 	fmt.Println(" 0) Exit")
 	fmt.Println("========================================")
 }

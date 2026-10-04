@@ -301,6 +301,7 @@ func setupV2RayPackageRoutes(router *echo.Group, jwtConfig echojwt.Config, v2ray
 	packageGroup.PUT("/:id", v2rayPackageController.UpdatePackage)
 	packageGroup.DELETE("/:id", v2rayPackageController.DeletePackage)
 	packageGroup.PATCH("/:id/reset-usage", v2rayPackageController.ResetPackageUsage)
+	packageGroup.PATCH("/:id/renew", v2rayPackageController.RenewPackage)
 	packageGroup.POST("/bulk-delete", v2rayPackageController.BulkDeletePackages)
 	packageGroup.GET("/:id/live-usage", v2rayPackageController.GetLiveUsage)
 	packageGroup.GET("/summary/self", v2rayPackageController.GetSelfSummary)

@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useResetUsageMutation } from '@/hooks/peers/useResetUsageMutation.ts'
 import { useUpdatePeerStatusMutation } from '@/hooks/peers/useUpdatePeerStatusMutation.ts'
+import { getApiErrorMessage } from '@/lib/api-error.ts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button.tsx'
 import { Switch } from '@/components/ui/switch.tsx'
@@ -188,8 +189,11 @@ export const peersColumns: ColumnDef<Peer>[] = [
               duration: 5000,
             })
           },
-          onError: () => {
+          onError: (error) => {
             setDialogOpen(false)
+            toast.error(
+              getApiErrorMessage(error, 'بازنشانی مصرف وایرگارد ناموفق بود.')
+            )
           },
         })
       }

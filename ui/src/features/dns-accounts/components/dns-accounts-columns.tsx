@@ -5,6 +5,7 @@ import { IconRestore } from '@tabler/icons-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useResetDNSAccountUsageMutation } from '@/hooks/dns-account/useResetDNSAccountUsageMutation.ts'
+import { getApiErrorMessage } from '@/lib/api-error.ts'
 import { Button } from '@/components/ui/button.tsx'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ColoredBadge } from '@/features/shared-components/status-badge.tsx'
@@ -93,8 +94,11 @@ export const dnsAccountsColumns: ColumnDef<DNSAccount>[] = [
               duration: 5000,
             })
           },
-          onError: () => {
+          onError: (error) => {
             setDialogOpen(false)
+            toast.error(
+              getApiErrorMessage(error, 'بازنشانی مصرف حساب ناموفق بود.')
+            )
           },
         })
       }
