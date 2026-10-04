@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 
-	"github.com/maahdima/mwp/api/config"
+	"github.com/maahdima/mwp/api/service"
 )
 
 // domainPattern is a conservative, intentionally non-exhaustive check --
@@ -18,22 +17,31 @@ import (
 // more confusing error.
 var domainPattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$`)
 
-// actionAutoSSL puts nginx in front of the panel's own port as a TLS-
-// terminating reverse proxy and obtains a real Let's Encrypt certificate
-// for it via certbot -- the panel's own Go binary only ever speaks plain
-// HTTP (see deploy/install.sh's own doc comment: "This script does NOT
-// set up nginx/TLS for MWPanel itself"), so reaching it over https://
-// requires something else in front of it. nginx is that something, and
-// certbot's own "--nginx" plugin edits the vhost it generates here in
-// place to add the listener/cert directives, which is why this writes a
-// plain-http vhost FIRST and only then calls certbot, rather than trying
-// to hand-write the TLS block itself.
+// actionAutoSSL obtains a real Let's Encrypt certificate via certbot and
+// wires the resulting file paths straight into the panel's own SSLSettings
+// row (service/ssl_settings.go) -- the exact same two paths an admin would
+// otherwise have to find and paste into the web UI's SSL settings page by
+// hand. This is NOT an nginx reverse-proxy setup: the panel's own HTTP
+// server already terminates TLS natively (see http-server.go's
+// LoadTLSConfig wiring) once SSLSettings.Enabled is true, so nothing else
+// needs to sit in front of it.
+//
+// certbot runs in --standalone mode, binding port 80 itself just long
+// enough to answer the ACME HTTP-01 challenge -- this requires the panel
+// (or anything else) to NOT already be listening on port 80, and for the
+// domain's DNS A record to already point at this server. Using
+// --standalone rather than --webroot avoids depending on an nginx/Apache
+// docroot that may not exist on a fresh install; a host that already runs
+// its own webroot-based renewal for other domains (as this project's own
+// production server does) is untouched by this, since this only ever
+// requests a certificate for the NEW domain given here.
 func actionAutoSSL(reader *bufio.Reader) {
 	fmt.Println()
-	fmt.Println("This installs nginx and certbot (if not already present), configures nginx")
-	fmt.Println("as a reverse proxy in front of the panel's own port, and obtains a real")
-	fmt.Println("TLS certificate for a domain you provide (which must already point at this")
-	fmt.Println("server's IP address -- certbot verifies that over the network).")
+	fmt.Println("This obtains a real TLS certificate from Let's Encrypt (via certbot, in")
+	fmt.Println("--standalone mode) for a domain you provide, and configures the panel to")
+	fmt.Println("serve HTTPS directly using it. The domain must already point at this")
+	fmt.Println("server's IP address, and port 80 must be free for the few seconds certbot")
+	fmt.Println("needs it to complete the verification.")
 	fmt.Println()
 
 	domain := readLine(reader, "Domain name (e.g. panel.example.com): ")
@@ -42,108 +50,75 @@ func actionAutoSSL(reader *bufio.Reader) {
 		return
 	}
 
-	appCfg := config.GetAppConfig()
-	panelPort := appCfg.Port
-	if panelPort == "" {
-		panelPort = "3000"
-	}
-	fmt.Printf("Proxying https://%s -> http://127.0.0.1:%s (the panel's own configured port).\n", domain, panelPort)
-	confirm := readLine(reader, "Continue? [y/N]: ")
+	confirm := readLine(reader, fmt.Sprintf("Request a certificate for %s now? [y/N]: ", domain))
 	if confirm != "y" && confirm != "Y" {
 		fmt.Println("Cancelled.")
 		return
 	}
 
 	fmt.Println()
-	fmt.Println("==> Installing nginx and certbot (apt-get)")
+	fmt.Println("==> Installing certbot (apt-get), if not already present")
 	if err := runCmdLive("apt-get", "update", "-qq"); err != nil {
 		fmt.Printf("Failed to run apt-get update: %v\n", err)
 		return
 	}
-	if err := runCmdLive("apt-get", "install", "-y", "-qq", "nginx", "certbot", "python3-certbot-nginx"); err != nil {
-		fmt.Printf("Failed to install nginx/certbot: %v\n", err)
-		fmt.Println("This menu assumes a Debian/Ubuntu host with apt-get -- install them manually on other distros.")
+	if err := runCmdLive("apt-get", "install", "-y", "-qq", "certbot"); err != nil {
+		fmt.Printf("Failed to install certbot: %v\n", err)
+		fmt.Println("This menu assumes a Debian/Ubuntu host with apt-get -- install it manually on other distros.")
 		return
 	}
 
-	siteConfig := fmt.Sprintf(`server {
-    listen 80;
-    server_name %s;
-
-    location / {
-        proxy_pass http://127.0.0.1:%s;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        # WebSocket support, needed for the panel's live log stream.
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-`, domain, panelPort)
-
-	sitesAvailable := filepath.Join("/etc/nginx/sites-available", domain)
-	sitesEnabled := filepath.Join("/etc/nginx/sites-enabled", domain)
-
-	fmt.Printf("==> Writing nginx site config to %s\n", sitesAvailable)
-	if err := os.WriteFile(sitesAvailable, []byte(siteConfig), 0o644); err != nil {
-		fmt.Printf("Failed to write nginx config: %v\n", err)
-		return
-	}
-
-	// Symlinking into sites-enabled is the standard Debian/Ubuntu nginx
-	// packaging convention (sites-available holds every config ever
-	// written, sites-enabled is what's actually live) -- some minimal
-	// images ship nginx without sites-enabled/the default include line in
-	// nginx.conf at all, so a missing directory here is reported clearly
-	// rather than failing deep inside a later nginx -t with no context.
-	if _, err := os.Stat("/etc/nginx/sites-enabled"); err == nil {
-		_ = os.Remove(sitesEnabled) // re-running this action replaces a previous symlink cleanly
-		if err := os.Symlink(sitesAvailable, sitesEnabled); err != nil {
-			fmt.Printf("Failed to enable nginx site: %v\n", err)
-			return
-		}
-	} else {
-		fmt.Println("Warning: /etc/nginx/sites-enabled not found -- this nginx package may include")
-		fmt.Println("sites-available configs directly. Check /etc/nginx/nginx.conf's own include lines")
-		fmt.Printf("if %s is not picked up.\n", sitesAvailable)
-	}
-
-	fmt.Println("==> Testing nginx configuration")
-	if err := runCmdLive("nginx", "-t"); err != nil {
-		fmt.Printf("nginx configuration test failed: %v\n", err)
-		fmt.Println("Fix the config above before retrying -- nginx was not reloaded.")
-		return
-	}
-
-	fmt.Println("==> Reloading nginx")
-	if err := exec.Command("systemctl", "reload", "nginx").Run(); err != nil {
-		if err := exec.Command("systemctl", "restart", "nginx").Run(); err != nil {
-			fmt.Printf("Failed to reload/restart nginx: %v\n", err)
-			return
-		}
-	}
-
-	fmt.Println("==> Requesting a certificate from Let's Encrypt (certbot)")
-	fmt.Println("This fails if the domain does not already resolve to this server's IP address.")
-	if err := runCmdLive("certbot", "--nginx", "-d", domain, "--non-interactive", "--agree-tos", "--redirect", "-m", "admin@"+domain, "--no-eff-email"); err != nil {
+	fmt.Println("==> Requesting a certificate from Let's Encrypt (certbot --standalone)")
+	fmt.Println("If this hangs or fails, confirm nothing else is listening on port 80 right now.")
+	if err := runCmdLive("certbot", "certonly", "--standalone", "-d", domain,
+		"--non-interactive", "--agree-tos", "-m", "admin@"+domain, "--no-eff-email"); err != nil {
 		fmt.Printf("certbot failed: %v\n", err)
 		fmt.Println("Common causes: the domain's DNS A record does not point at this server yet,")
-		fmt.Println("or port 80 is blocked by a firewall (certbot's nginx plugin needs it for the HTTP-01 challenge).")
+		fmt.Println("or port 80 is already in use by another process.")
+		return
+	}
+
+	certPath := fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", domain)
+	keyPath := fmt.Sprintf("/etc/letsencrypt/live/%s/privkey.pem", domain)
+
+	fmt.Println("==> Saving certificate paths into the panel's own SSL settings")
+	db, err := connectDB()
+	if err != nil {
+		fmt.Printf("Certificate obtained at %s, but failed to connect to the database to enable it: %v\n", certPath, err)
+		fmt.Println("Set it from the web UI's SSL settings page instead, using the paths above.")
+		return
+	}
+
+	sslSettingsService := service.NewSSLSettingsService(db)
+	enabled := true
+	if _, err := sslSettingsService.UpdateSettings(service.UpdateSSLSettingsInput{
+		Domain:          &domain,
+		CertificatePath: &certPath,
+		PrivateKeyPath:  &keyPath,
+		Enabled:         &enabled,
+	}); err != nil {
+		fmt.Printf("Certificate obtained at %s, but failed to enable it in the panel: %v\n", certPath, err)
+		fmt.Println("Set it from the web UI's SSL settings page instead, using the paths above.")
+		return
+	}
+
+	fmt.Println("==> Restarting service to apply it")
+	if err := exec.Command("systemctl", "restart", serviceName).Run(); err != nil {
+		fmt.Printf("SSL enabled, but failed to restart %s automatically: %v\n", serviceName, err)
+		fmt.Printf("Run `systemctl restart %s` by hand for it to take effect.\n", serviceName)
 		return
 	}
 
 	fmt.Println()
-	fmt.Printf("Done. The panel is now reachable at https://%s\n", domain)
+	fmt.Printf("Done. The panel now serves HTTPS directly at https://%s:<panel-port>\n", domain)
 	fmt.Println("Certbot has also installed its own systemd timer that renews the certificate automatically before it expires.")
+	fmt.Println("Note: certbot's standalone renewal needs port 80 free each time it runs -- if that stops being true, renewal will fail silently until the cert expires.")
 }
 
 // runCmdLive runs a command with no working-directory override, streaming
 // output live -- same rationale as runCmd in build.go, but for commands
-// that operate on the system (apt-get, nginx, certbot) rather than inside
-// a cloned repo.
+// that operate on the system (apt-get, certbot) rather than inside a
+// cloned repo.
 func runCmdLive(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = os.Stdout
