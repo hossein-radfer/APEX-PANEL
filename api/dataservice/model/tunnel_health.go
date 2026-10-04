@@ -80,6 +80,20 @@ type TunnelHealthStatus struct {
 	// ImmediateGw for this interface.
 	LastKnownGatewayIP string `gorm:"type:varchar(64);not null;default:''"`
 
+	// ConfirmedDownSince (confirmed, reported bug fix): set the moment
+	// Severity FIRST transitions into "confirmed_down", cleared the
+	// moment it recovers to "healthy". Before this field existed,
+	// TunnelHealthService.considerRemediation escalated Level 1 -> Level
+	// 2 -> Level 3 purely by "one level per poll tick the tunnel is still
+	// unhealthy," with no enforced wall-clock deadline -- a tunnel could
+	// in principle sit unresolved far longer than the 3-minute failover
+	// SLA the admin expects, depending on each level's own wait/attempt
+	// time and any anti-flapping/boot-grace gating in between.
+	// considerRemediation now also force-escalates straight to Level 3
+	// once this field is more than 3 minutes old, independent of which
+	// level was last attempted (see forceLevel3Deadline).
+	ConfirmedDownSince *time.Time
+
 	LastPolledAt time.Time `gorm:"not null"`
 }
 
@@ -376,6 +390,16 @@ type UserManagerProtocolHealthStatus struct {
 	// evidence.
 	RouterEnabled bool `gorm:"not null;default:false"`
 	PortReachable bool `gorm:"not null;default:false"`
+
+	// ConsecutiveFailures (confirmed, reported bug fix): a single failed
+	// probe (one net.DialTimeout, one tick) used to immediately flip
+	// Healthy to false and fire a Telegram alert -- no debounce at all,
+	// unlike TunnelHealthService's own infrastructure-tunnel engine
+	// (3 consecutive bad samples required). UserManagerProtocolHealthService.
+	// pollOneProtocol now requires protocolHealthFailureThreshold
+	// consecutive bad polls before transitioning to unhealthy; any single
+	// successful poll resets this to 0 immediately.
+	ConsecutiveFailures int `gorm:"not null;default:0"`
 
 	LastCheckedAt time.Time `gorm:"not null"`
 }

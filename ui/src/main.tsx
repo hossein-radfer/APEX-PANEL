@@ -70,7 +70,7 @@ const handleGlobalHttpError = (error: unknown) => {
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: false,
+      retry: 2,
       refetchOnWindowFocus: import.meta.env.PROD,
       staleTime: 10 * 1000,
     },

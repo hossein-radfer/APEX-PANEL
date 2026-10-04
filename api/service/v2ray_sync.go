@@ -365,6 +365,14 @@ func isRawLinkContent(trimmed string) bool {
 // customer's own V2Ray app's server list shows their remaining volume/
 // days/status at a glance, refreshed on every tick alongside the real
 // entries below it.
+// RecombineConfig is the exported entry point satisfying
+// v2rayConfigRecombiner (see V2RayPackageService.SetConfigRecombiner) so
+// package creation/location-add can trigger an immediate rebuild instead
+// of waiting for this service's own periodic tick.
+func (s *V2RaySyncService) RecombineConfig(packageID uint) {
+	s.recombineConfig(packageID)
+}
+
 func (s *V2RaySyncService) recombineConfig(packageID uint) {
 	var pkg model.V2RayPackage
 	if err := s.db.First(&pkg, packageID).Error; err != nil {

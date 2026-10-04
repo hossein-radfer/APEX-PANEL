@@ -123,9 +123,26 @@ func (s *BotScheduler) sendScheduledBackup(settings *model.BotSettings, today st
 		s.notifier.NotifyCriticalAlert("خطا در تهیه‌ی بکاپ خودکار پایگاه‌داده: " + err.Error())
 		return
 	}
+	// Confirmed, reported feature request: unlike SendInstantBackup/the
+	// web download endpoint (which stay ephemeral -- create, send,
+	// delete), the SCHEDULED automatic backup must stay recoverable on
+	// disk at a known path, with the previous one deleted first rather
+	// than accumulating. RetainAsLatestAutoBackup moves `path` into that
+	// fixed slot; `cleanup` is still deferred as a safety net (it
+	// no-ops once the file has already been moved away, see its own
+	// os.IsNotExist handling) in case retention fails and the original
+	// temp file is still sitting there.
 	defer cleanup()
+	retainedPath, retainErr := s.backupService.RetainAsLatestAutoBackup(path)
+	if retainErr != nil {
+		s.logger.Error("failed to retain scheduled backup on disk", zap.Error(retainErr))
+		// Not fatal to the rest of this run -- the backup still gets
+		// sent to Telegram from its original temp path below, the admin
+		// just won't also have a local recoverable copy this time.
+		retainedPath = path
+	}
 
-	sendPath, sendCleanup := s.compressForTelegramOrFallback(path)
+	sendPath, sendCleanup := s.compressForTelegramOrFallback(retainedPath)
 	defer sendCleanup()
 
 	caption := "بکاپ خودکار روزانه (" + timehelper.TehranDateStamp(time.Now()) + ")"

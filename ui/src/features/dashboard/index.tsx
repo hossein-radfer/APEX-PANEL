@@ -34,6 +34,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { CardErrorBoundary } from '@/components/card-error-boundary.tsx'
 import { PanelHealthTable } from '@/features/dashboard/components/panel-health-table.tsx'
 import { StatsCard } from '@/features/dashboard/components/stats-card.tsx'
 import { HighlightStatsCard } from '@/features/dashboard/components/highlight-stats-card.tsx'
@@ -518,178 +519,194 @@ export default function Dashboard() {
               isLoading={isDeviceDataLoading}
             />
 
-            <Card>
-              <CardHeader className='flex flex-row items-center justify-between pb-2'>
-                <CardTitle className='text-sm font-medium'>
-                  فعالیت نمایندگان
-                </CardTitle>
-                <IconActivity className='text-muted-foreground h-4 w-4' />
-              </CardHeader>
-              <CardContent>
-                {isResellerActivityLoading ? (
-                  <p className='text-muted-foreground text-sm'>در حال بارگذاری...</p>
-                ) : resellerActivitySummary && resellerActivitySummary.resellers.length > 0 ? (
-                  <div className='space-y-3'>
-                    <div className='flex flex-wrap gap-6'>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>مجموع آنلاین (همه‌ی نمایندگان)</p>
-                        <p className='text-xl font-bold'>{formatNumberFa(resellerActivitySummary.total_online_peers)}</p>
+            <CardErrorBoundary>
+              <Card>
+                <CardHeader className='flex flex-row items-center justify-between pb-2'>
+                  <CardTitle className='text-sm font-medium'>
+                    فعالیت نمایندگان
+                  </CardTitle>
+                  <IconActivity className='text-muted-foreground h-4 w-4' />
+                </CardHeader>
+                <CardContent>
+                  {isResellerActivityLoading ? (
+                    <p className='text-muted-foreground text-sm'>در حال بارگذاری...</p>
+                  ) : resellerActivitySummary && resellerActivitySummary.resellers.length > 0 ? (
+                    <div className='space-y-3'>
+                      <div className='flex flex-wrap gap-6'>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>مجموع آنلاین (همه‌ی نمایندگان)</p>
+                          <p className='text-xl font-bold'>{formatNumberFa(resellerActivitySummary.total_online_peers)}</p>
+                        </div>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>مصرف امروز (همه‌ی نمایندگان)</p>
+                          <p className='text-xl font-bold'>{formatNumberFa(Number(resellerActivitySummary.total_today_usage_gb))} گیگابایت</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>مصرف امروز (همه‌ی نمایندگان)</p>
-                        <p className='text-xl font-bold'>{formatNumberFa(Number(resellerActivitySummary.total_today_usage_gb))} گیگابایت</p>
-                      </div>
-                    </div>
-                    <div className='overflow-hidden rounded-lg border'>
-                      <Table>
-                        <TableHeader>
-                          <TableRow className='bg-muted/40'>
-                            <TableHead className='text-start'>نماینده</TableHead>
-                            <TableHead className='text-start'>آنلاین</TableHead>
-                            <TableHead className='text-start'>کل کاربران</TableHead>
-                            <TableHead className='text-start'>مصرف امروز</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {resellerActivitySummary.resellers.map((r) => (
-                            <TableRow key={r.reseller_id}>
-                              <TableCell className='font-medium'>{r.reseller_name}</TableCell>
-                              <TableCell>{formatNumberFa(r.online_peers)}</TableCell>
-                              <TableCell>{formatNumberFa(r.total_peers)}</TableCell>
-                              <TableCell>{formatNumberFa(Number(r.today_usage_gb))} گیگابایت</TableCell>
+                      <div className='overflow-hidden rounded-lg border'>
+                        <Table>
+                          <TableHeader>
+                            <TableRow className='bg-muted/40'>
+                              <TableHead className='text-start'>نماینده</TableHead>
+                              <TableHead className='text-start'>آنلاین</TableHead>
+                              <TableHead className='text-start'>کل کاربران</TableHead>
+                              <TableHead className='text-start'>مصرف امروز</TableHead>
                             </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                          </TableHeader>
+                          <TableBody>
+                            {resellerActivitySummary.resellers.map((r) => (
+                              <TableRow key={r.reseller_id}>
+                                <TableCell className='font-medium'>{r.reseller_name}</TableCell>
+                                <TableCell>{formatNumberFa(r.online_peers)}</TableCell>
+                                <TableCell>{formatNumberFa(r.total_peers)}</TableCell>
+                                <TableCell>{formatNumberFa(Number(r.today_usage_gb))} گیگابایت</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <EmptyState message='هنوز هیچ کاربری متعلق به نماینده‌ای وجود ندارد.' />
-                )}
-              </CardContent>
-            </Card>
+                  ) : (
+                    <EmptyState message='هنوز هیچ کاربری متعلق به نماینده‌ای وجود ندارد.' />
+                  )}
+                </CardContent>
+              </Card>
+            </CardErrorBoundary>
 
-            <Card interactive>
-              <CardHeader className='flex flex-row items-center justify-between pb-2'>
-                <CardTitle className='text-sm font-medium'>
-                  پنل‌های V2Ray
-                </CardTitle>
-                <IconServer2 className='text-muted-foreground h-4 w-4' />
-              </CardHeader>
-              <CardContent>
-                {isV2rayAdminSummaryLoading ? (
-                  <p className='text-muted-foreground text-sm'>در حال بارگذاری...</p>
-                ) : v2rayAdminSummary && v2rayAdminSummary.panels.length > 0 ? (
-                  <div className='space-y-3'>
-                    <div className='flex flex-wrap gap-6'>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>کل پکیج‌ها</p>
-                        <p className='text-xl font-bold'>{formatNumberFa(v2rayAdminSummary.total_packages)}</p>
+            <CardErrorBoundary>
+              <Card interactive>
+                <CardHeader className='flex flex-row items-center justify-between pb-2'>
+                  <CardTitle className='text-sm font-medium'>
+                    پنل‌های V2Ray
+                  </CardTitle>
+                  <IconServer2 className='text-muted-foreground h-4 w-4' />
+                </CardHeader>
+                <CardContent>
+                  {isV2rayAdminSummaryLoading ? (
+                    <p className='text-muted-foreground text-sm'>در حال بارگذاری...</p>
+                  ) : v2rayAdminSummary && v2rayAdminSummary.panels.length > 0 ? (
+                    <div className='space-y-3'>
+                      <div className='flex flex-wrap gap-6'>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>کل پکیج‌ها</p>
+                          <p className='text-xl font-bold'>{formatNumberFa(v2rayAdminSummary.total_packages)}</p>
+                        </div>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>لوکیشن‌های آنلاین</p>
+                          <p className='text-xl font-bold'>
+                            {formatNumberFa(v2rayAdminSummary.online_locations)} / {formatNumberFa(v2rayAdminSummary.total_locations)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>کل مصرف</p>
+                          <p className='text-xl font-bold'>
+                            {formatNumberFa(Number((v2rayAdminSummary.total_used_bytes / BYTES_PER_GB).toFixed(2)))} گیگابایت
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>لوکیشن‌های آنلاین</p>
-                        <p className='text-xl font-bold'>
-                          {formatNumberFa(v2rayAdminSummary.online_locations)} / {formatNumberFa(v2rayAdminSummary.total_locations)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>کل مصرف</p>
-                        <p className='text-xl font-bold'>
-                          {formatNumberFa(Number((v2rayAdminSummary.total_used_bytes / BYTES_PER_GB).toFixed(2)))} گیگابایت
-                        </p>
-                      </div>
+                      <PanelHealthTable
+                        itemCountLabel='لوکیشن‌ها'
+                        rows={v2rayAdminSummary.panels.map((p) => ({
+                          panelId: p.panel_id,
+                          panelName: p.panel_name,
+                          onlineCount: p.online_count,
+                          itemCount: p.location_count,
+                          hasRecentError: p.has_recent_error,
+                        }))}
+                      />
                     </div>
-                    <PanelHealthTable
-                      itemCountLabel='لوکیشن‌ها'
-                      rows={v2rayAdminSummary.panels.map((p) => ({
-                        panelId: p.panel_id,
-                        panelName: p.panel_name,
-                        onlineCount: p.online_count,
-                        itemCount: p.location_count,
-                        hasRecentError: p.has_recent_error,
-                      }))}
-                    />
-                  </div>
-                ) : (
-                  <EmptyState message='هنوز هیچ پنل V2Ray ثبت نشده است.' />
-                )}
-              </CardContent>
-            </Card>
+                  ) : (
+                    <EmptyState message='هنوز هیچ پنل V2Ray ثبت نشده است.' />
+                  )}
+                </CardContent>
+              </Card>
+            </CardErrorBoundary>
 
-            <Card interactive>
-              <CardHeader className='flex flex-row items-center justify-between pb-2'>
-                <CardTitle className='text-sm font-medium'>
-                  پنل‌های DNS
-                </CardTitle>
-                <IconServer2 className='text-muted-foreground h-4 w-4' />
-              </CardHeader>
-              <CardContent>
-                {isDnsAdminSummaryLoading ? (
-                  <p className='text-muted-foreground text-sm'>در حال بارگذاری...</p>
-                ) : dnsAdminSummary && dnsAdminSummary.panels.length > 0 ? (
-                  <div className='space-y-3'>
-                    <div className='flex flex-wrap gap-6'>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>کل حساب‌ها</p>
-                        <p className='text-xl font-bold'>{formatNumberFa(dnsAdminSummary.total_accounts)}</p>
+            <CardErrorBoundary>
+              <Card interactive>
+                <CardHeader className='flex flex-row items-center justify-between pb-2'>
+                  <CardTitle className='text-sm font-medium'>
+                    پنل‌های DNS
+                  </CardTitle>
+                  <IconServer2 className='text-muted-foreground h-4 w-4' />
+                </CardHeader>
+                <CardContent>
+                  {isDnsAdminSummaryLoading ? (
+                    <p className='text-muted-foreground text-sm'>در حال بارگذاری...</p>
+                  ) : dnsAdminSummary && dnsAdminSummary.panels.length > 0 ? (
+                    <div className='space-y-3'>
+                      <div className='flex flex-wrap gap-6'>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>کل حساب‌ها</p>
+                          <p className='text-xl font-bold'>{formatNumberFa(dnsAdminSummary.total_accounts)}</p>
+                        </div>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>IP ثبت‌شده</p>
+                          <p className='text-xl font-bold'>
+                            {formatNumberFa(dnsAdminSummary.online_accounts)} / {formatNumberFa(dnsAdminSummary.total_accounts)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className='text-muted-foreground text-xs'>کل مصرف</p>
+                          <p className='text-xl font-bold'>
+                            {formatNumberFa(Number((dnsAdminSummary.total_used_bytes / BYTES_PER_GB).toFixed(2)))} گیگابایت
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>IP ثبت‌شده</p>
-                        <p className='text-xl font-bold'>
-                          {formatNumberFa(dnsAdminSummary.online_accounts)} / {formatNumberFa(dnsAdminSummary.total_accounts)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className='text-muted-foreground text-xs'>کل مصرف</p>
-                        <p className='text-xl font-bold'>
-                          {formatNumberFa(Number((dnsAdminSummary.total_used_bytes / BYTES_PER_GB).toFixed(2)))} گیگابایت
-                        </p>
-                      </div>
+                      <PanelHealthTable
+                        itemCountLabel='حساب‌ها'
+                        rows={dnsAdminSummary.panels.map((p) => ({
+                          panelId: p.panel_id,
+                          panelName: p.panel_name,
+                          onlineCount: p.online_count,
+                          itemCount: p.account_count,
+                          hasRecentError: p.has_recent_error,
+                        }))}
+                      />
                     </div>
-                    <PanelHealthTable
-                      itemCountLabel='حساب‌ها'
-                      rows={dnsAdminSummary.panels.map((p) => ({
-                        panelId: p.panel_id,
-                        panelName: p.panel_name,
-                        onlineCount: p.online_count,
-                        itemCount: p.account_count,
-                        hasRecentError: p.has_recent_error,
-                      }))}
-                    />
-                  </div>
-                ) : (
-                  <EmptyState message='هنوز هیچ پنل DNS ثبت نشده است.' />
-                )}
-              </CardContent>
-            </Card>
+                  ) : (
+                    <EmptyState message='هنوز هیچ پنل DNS ثبت نشده است.' />
+                  )}
+                </CardContent>
+              </Card>
+            </CardErrorBoundary>
 
             <div className='grid grid-cols-1 gap-4 lg:grid-cols-7'>
-              {isDeviceDataLoading ? (
-                <DeviceStatsSkeleton type='base' />
-              ) : (
-                <DeviceInfo stats={deviceData} />
-              )}
+              <CardErrorBoundary>
+                {isDeviceDataLoading ? (
+                  <DeviceStatsSkeleton type='base' />
+                ) : (
+                  <DeviceInfo stats={deviceData} />
+                )}
+              </CardErrorBoundary>
 
-              {isDeviceDataLoading ? (
-                <DeviceStatsSkeleton type='resource' />
-              ) : (
-                <DeviceResource stats={deviceData?.DeviceInfo} />
-              )}
+              <CardErrorBoundary>
+                {isDeviceDataLoading ? (
+                  <DeviceStatsSkeleton type='resource' />
+                ) : (
+                  <DeviceResource stats={deviceData?.DeviceInfo} />
+                )}
+              </CardErrorBoundary>
 
-              <PeersChart
-                isLoading={isDeviceDataLoading}
-                stats={deviceData?.PeerInfo}
-              />
-
-              {isDeviceDataLoading ? (
-                <OnlineUsersSkeleton />
-              ) : (
-                <RecentlyOnlineUsers
-                  peers={deviceData?.PeerInfo?.recent_online_peers ?? []}
+              <CardErrorBoundary>
+                <PeersChart
+                  isLoading={isDeviceDataLoading}
+                  stats={deviceData?.PeerInfo}
                 />
-              )}
+              </CardErrorBoundary>
 
-              <TrafficChart />
+              <CardErrorBoundary>
+                {isDeviceDataLoading ? (
+                  <OnlineUsersSkeleton />
+                ) : (
+                  <RecentlyOnlineUsers
+                    peers={deviceData?.PeerInfo?.recent_online_peers ?? []}
+                  />
+                )}
+              </CardErrorBoundary>
+
+              <CardErrorBoundary>
+                <TrafficChart />
+              </CardErrorBoundary>
             </div>
           </TabsContent>
         </Tabs>

@@ -13,7 +13,7 @@ import {
 import { fetchPartners } from '@/api/accounting.ts'
 import { fetchServersList } from '@/api/servers.ts'
 import { AccountingCost } from '@/schema/accounting.ts'
-import { formatCurrencyFa } from '@/features/reports/lib/format.ts'
+import { formatCurrencyFa, formatDateFa } from '@/features/reports/lib/format.ts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -79,6 +79,7 @@ export function CostsTab() {
   const [editing, setEditing] = useState<AccountingCost | null>(null)
   const [partnerId, setPartnerId] = useState<string>('')
   const [serverId, setServerId] = useState<string>(NONE)
+  const [manualServerName, setManualServerName] = useState('')
   const [protocol, setProtocol] = useState<string>(NONE)
   const [locationKey, setLocationKey] = useState('')
   const [amount, setAmount] = useState<number | string>('')
@@ -128,6 +129,7 @@ export function CostsTab() {
     setEditing(null)
     setPartnerId('')
     setServerId(NONE)
+    setManualServerName('')
     setProtocol(NONE)
     setLocationKey('')
     setAmount('')
@@ -146,6 +148,7 @@ export function CostsTab() {
     setEditing(cost)
     setPartnerId(String(cost.partner_id))
     setServerId(cost.server_id ? String(cost.server_id) : NONE)
+    setManualServerName(cost.manual_server_name ?? '')
     setProtocol(cost.protocol ?? NONE)
     setLocationKey(cost.location_key ?? '')
     setAmount(cost.amount_toman)
@@ -170,6 +173,11 @@ export function CostsTab() {
     const req = {
       partner_id: Number(partnerId),
       server_id: serverId === NONE ? null : Number(serverId),
+      // Only sent when no managed server is selected -- the backend also
+      // enforces this mutual exclusivity, this just avoids sending a
+      // stale label alongside a newly-picked server_id.
+      manual_server_name:
+        serverId === NONE ? manualServerName.trim() || null : null,
       protocol: protocol === NONE ? null : protocol,
       location_key: locationKey.trim() || null,
       amount_toman: parsedAmount,
@@ -223,7 +231,9 @@ export function CostsTab() {
                     >
                       {cost.partner_name}
                     </TableCell>
-                    <TableCell>{cost.server_name || '—'}</TableCell>
+                    <TableCell>
+                      {cost.server_name || cost.manual_server_name || '—'}
+                    </TableCell>
                     <TableCell>
                       {cost.protocol ? (
                         <div className='flex flex-col gap-1'>
@@ -243,10 +253,10 @@ export function CostsTab() {
                     <TableCell className='tabular-nums'>
                       {formatCurrencyFa(cost.amount_toman)}
                     </TableCell>
-                    <TableCell>{cost.paid_at || '—'}</TableCell>
+                    <TableCell>{formatDateFa(cost.paid_at)}</TableCell>
                     <TableCell>
                       {cost.next_due_at ? (
-                        <Badge variant='outline'>{cost.next_due_at}</Badge>
+                        <Badge variant='outline'>{formatDateFa(cost.next_due_at)}</Badge>
                       ) : (
                         '—'
                       )}
@@ -317,6 +327,14 @@ export function CostsTab() {
                     ))}
                   </SelectContent>
                 </Select>
+                {serverId === NONE && (
+                  <Input
+                    className='mt-1'
+                    placeholder='یا نام سرور را دستی وارد کنید (مثلاً یک سرور خارجی)'
+                    value={manualServerName}
+                    onChange={(e) => setManualServerName(e.target.value)}
+                  />
+                )}
               </div>
               <div className='space-y-2'>
                 <Label>پروتکل (اختیاری)</Label>

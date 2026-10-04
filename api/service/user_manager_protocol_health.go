@@ -57,6 +57,16 @@ func (s *UserManagerProtocolHealthService) SetBotNotifier(notifier *BotNotifier)
 // against the next tick.
 const tcpProbeTimeout = 5 * time.Second
 
+// protocolHealthFailureThreshold (confirmed, reported bug fix): a single
+// transient probe failure (a brief network hiccup, a momentary port
+// stall) used to immediately flip this protocol to unhealthy and fire a
+// Telegram alert -- with zero debounce, unlike TunnelHealthService's own
+// infrastructure-tunnel engine (3 consecutive bad samples required before
+// declaring confirmed_down). Requiring this many consecutive failed polls
+// before transitioning closes that gap; a single successful poll resets
+// the counter to 0 immediately (fast recovery, slow failure).
+const protocolHealthFailureThreshold = 2
+
 // Poll checks all four User Manager protocols this poll tick. Each
 // protocol's own admin-recorded UserManagerProtocolConfig row supplies
 // the port/server-address to probe (the panel's own descriptive record,
@@ -104,7 +114,7 @@ func (s *UserManagerProtocolHealthService) pollOneProtocol(cfg model.UserManager
 		portReachable = s.probeTCPPort(cfg)
 	}
 
-	healthy := routerEnabled && portReachable
+	probePassed := routerEnabled && portReachable
 
 	var status model.UserManagerProtocolHealthStatus
 	dbErr := s.db.Where("protocol = ?", cfg.Protocol).First(&status).Error
@@ -114,10 +124,25 @@ func (s *UserManagerProtocolHealthService) pollOneProtocol(cfg model.UserManager
 		wasHealthy = status.Healthy
 	}
 
+	// Debounce (see protocolHealthFailureThreshold's doc comment): a
+	// passing probe always resets the streak and is healthy immediately;
+	// a failing probe only flips Healthy to false once the consecutive
+	// count reaches the threshold, so a single transient hiccup no longer
+	// alerts on its own. A brand-new row (isNew) starts from the same
+	// "previously healthy" assumption as wasHealthy's own default above,
+	// so a first-ever failing poll is debounced exactly like any other.
+	consecutiveFailures := 0
+	healthy := true
+	if !probePassed {
+		consecutiveFailures = status.ConsecutiveFailures + 1
+		healthy = wasHealthy && consecutiveFailures < protocolHealthFailureThreshold
+	}
+
 	status.Protocol = cfg.Protocol
 	status.Healthy = healthy
 	status.RouterEnabled = routerEnabled
 	status.PortReachable = portReachable
+	status.ConsecutiveFailures = consecutiveFailures
 	status.LastCheckedAt = now
 
 	if isNew {

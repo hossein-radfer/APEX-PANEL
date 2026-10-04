@@ -32,6 +32,19 @@ type XuiPanel struct {
 	LastError    *string `gorm:"type:text"`
 	LastSyncedAt *time.Time
 
+	// ConsecutiveLoginFailures (confirmed, reported bug fix): a transient
+	// x-ui login hiccup (a brief resource spike, a slow container restart)
+	// used to flip Status to "error" and fire a Telegram alert on the very
+	// FIRST failed poll tick, with zero debounce -- unlike
+	// TunnelHealthService's own infrastructure-tunnel engine, which
+	// requires 3 consecutive bad samples before declaring confirmed_down.
+	// V2RayPanelHealthService.pollOnePanel now requires
+	// panelHealthFailureThreshold consecutive failures before transitioning
+	// to unhealthy/alerting; a single successful poll resets this to 0
+	// immediately (fast recovery, slow failure -- the same asymmetry this
+	// codebase already uses for recovery vs. failure elsewhere).
+	ConsecutiveLoginFailures int `gorm:"not null;default:0"`
+
 	// ContainerServerID/ContainerName (item 9): alireza0's x-ui panels are
 	// commonly hosted INSIDE a RouterOS 7 native Docker container
 	// (confirmed with the admin -- "پنل های v2ray که علیرضا هستن برروی

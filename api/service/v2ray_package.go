@@ -28,12 +28,24 @@ import (
 // usage is the sum across a package's locations, computed and cached by
 // the background sync job (v2ray_sync.go), never live at request time.
 type V2RayPackageService struct {
-	db             *gorm.DB
-	panels         *XuiPanelService
-	auditLog       *AuditLog
-	botNotifier    *BotNotifier
-	licenseLimiter freeTierLimiter
-	logger         *zap.Logger
+	db               *gorm.DB
+	panels           *XuiPanelService
+	auditLog         *AuditLog
+	botNotifier      *BotNotifier
+	licenseLimiter   freeTierLimiter
+	configRecombiner v2rayConfigRecombiner
+	logger           *zap.Logger
+}
+
+// v2rayConfigRecombiner is the narrow interface V2RaySyncService satisfies
+// for its own recombineConfig method -- injected post-construction (see
+// SetConfigRecombiner) so V2RayPackageService never depends on the full
+// V2RaySyncService (avoiding an import cycle, same narrow-interface
+// pattern as freeTierLimiter). nil is safe: the combined subscription
+// blob simply waits for the next scheduled sync tick instead of updating
+// immediately, exactly like before this type existed.
+type v2rayConfigRecombiner interface {
+	RecombineConfig(packageID uint)
 }
 
 func NewV2RayPackageService(db *gorm.DB, panels *XuiPanelService, auditLog *AuditLog) *V2RayPackageService {
@@ -56,6 +68,30 @@ func (s *V2RayPackageService) SetBotNotifier(notifier *BotNotifier) {
 // Safe to leave unset (nil licenseLimiter disables enforcement entirely).
 func (s *V2RayPackageService) SetLicenseLimiter(limiter freeTierLimiter) {
 	s.licenseLimiter = limiter
+}
+
+// SetConfigRecombiner wires V2RaySyncService's RecombineConfig after
+// construction (same post-construction injection pattern as
+// SetBotNotifier/SetLicenseLimiter). Confirmed, reported bug this fixes:
+// a brand-new package's per-location ConfigLinkCached is already fetched
+// immediately (see CreatePackage/addPackageLocation's own doc comments),
+// but CombinedConfigCached -- the actual blob GetCombinedSubscription
+// serves to the customer's V2Ray client app -- was only ever rebuilt by
+// the periodic sync job (up to TRAFFIC_JOB_INTERVAL seconds, default
+// 120s, later), so a customer had to refresh their app repeatedly before
+// a newly-added package/location showed up. Calling it immediately after
+// each location's own cache is fixed closes that gap. Safe to leave
+// unset (nil recombiner just keeps the old periodic-only behavior).
+func (s *V2RayPackageService) SetConfigRecombiner(recombiner v2rayConfigRecombiner) {
+	s.configRecombiner = recombiner
+}
+
+// recombineConfigIfWired is a tiny nil-safe helper so call sites don't
+// each need their own nil check.
+func (s *V2RayPackageService) recombineConfigIfWired(packageID uint) {
+	if s.configRecombiner != nil {
+		s.configRecombiner.RecombineConfig(packageID)
+	}
 }
 
 // ErrFreeTierV2RayPackageLimitReached is returned by CreatePackage when the
@@ -515,6 +551,10 @@ func (s *V2RayPackageService) CreatePackage(req *schema.CreateV2RayPackageReques
 		}
 	}
 
+	// Rebuild the combined subscription blob NOW rather than waiting for
+	// the next periodic sync tick -- see SetConfigRecombiner's doc comment.
+	s.recombineConfigIfWired(pkg.ID)
+
 	customerLabel := "بدون‌نام"
 	if pkg.CustomerLabel != nil && *pkg.CustomerLabel != "" {
 		customerLabel = *pkg.CustomerLabel
@@ -913,6 +953,11 @@ func (s *V2RayPackageService) addPackageLocation(pkg model.V2RayPackage, panel m
 			s.logger.Error("failed to mark failed v2ray location as disabled", zap.Uint("panel_id", location.PanelID), zap.Error(updateErr))
 		}
 	}
+
+	// See CreatePackage's identical call + SetConfigRecombiner's doc
+	// comment: rebuild the combined subscription blob now instead of
+	// waiting for the next periodic sync tick.
+	s.recombineConfigIfWired(pkg.ID)
 }
 
 // removePackageLocation disables loc's x-ui client on panel -- best

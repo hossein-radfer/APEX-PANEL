@@ -97,6 +97,40 @@ func (s *BackupService) CreateBackup() (path string, cleanup func(), err error) 
 	return backupPath, cleanup, nil
 }
 
+// autoBackupRetainedFileName is the fixed (non-timestamped) filename the
+// scheduled automatic backup is kept under -- see RetainAsLatestAutoBackup.
+const autoBackupRetainedFileName = "auto-backup-latest.db"
+
+// RetainAsLatestAutoBackup moves tempPath (a fresh CreateBackup result)
+// into this install's fixed "latest scheduled backup" slot, deleting
+// whatever was there before FIRST -- confirmed, reported feature
+// request: scheduled automatic backups must stay recoverable on disk at
+// a known path (matching the terminal-menu "backup" feature's own
+// "show the exact file path" requirement elsewhere in this project),
+// but only ever ONE version at a time, never accumulating. Manual
+// backups (SendInstantBackup, the web download endpoint) are deliberately
+// NOT affected by this -- those remain the existing ephemeral
+// create-send-delete behavior, since an admin explicitly requesting a
+// one-off backup already has it in hand (sent to Telegram / downloaded)
+// and has no expectation of it also being kept here.
+func (s *BackupService) RetainAsLatestAutoBackup(tempPath string) (string, error) {
+	backupDir := filepath.Join(s.dataDir, "backups")
+	retainedPath := filepath.Join(backupDir, autoBackupRetainedFileName)
+
+	if removeErr := os.Remove(retainedPath); removeErr != nil && !os.IsNotExist(removeErr) {
+		return "", fmt.Errorf("failed to remove previous auto-backup: %w", removeErr)
+	}
+
+	// Rename (not copy) -- tempPath and retainedPath are always in the
+	// same directory (backupDir), so this is an atomic, same-filesystem
+	// move with no partial-file window.
+	if err := os.Rename(tempPath, retainedPath); err != nil {
+		return "", fmt.Errorf("failed to move backup into retained slot: %w", err)
+	}
+
+	return retainedPath, nil
+}
+
 // CompressFile gzips the file at path into a sibling "<path>.gz" file,
 // returning its path and a cleanup func that removes just the compressed
 // copy (the original, uncompressed file is left untouched -- the caller

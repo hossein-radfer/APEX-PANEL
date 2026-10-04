@@ -19,6 +19,10 @@ export const AccountingCostSchema = z.object({
   partner_name: z.string(),
   server_id: z.number().nullable().optional(),
   server_name: z.string().nullable().optional(),
+  // manual_server_name: a free-text server label for infrastructure not
+  // present in the managed Server table (e.g. a foreign VPS with no
+  // RouterOS API) -- set only when server_id is null.
+  manual_server_name: z.string().nullable().optional(),
   protocol: AccountingProtocolEnum.nullable().optional(),
   location_key: z.string().nullable().optional(),
   location_label: z.string().nullable().optional(),
@@ -116,6 +120,7 @@ export interface CreatePartnerRequest {
 export interface CreateCostRequest {
   partner_id: number
   server_id?: number | null
+  manual_server_name?: string | null
   protocol?: string | null
   location_key?: string | null
   amount_toman: number

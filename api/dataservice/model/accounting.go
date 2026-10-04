@@ -46,6 +46,17 @@ type AccountingCost struct {
 	PartnerID uint    `gorm:"index;not null"`
 	ServerID  *uint   `gorm:"index"`
 	Protocol  *string `gorm:"type:varchar(32)"` // "wireguard" | "user_manager" | "v2ray" | nil
+	// ManualServerName (confirmed, reported gap): a free-text server
+	// label for costs that belong to infrastructure NOT present in the
+	// Server table -- that table only ever holds RouterOS routers this
+	// panel actively manages via its API, so a foreign VPS/dedicated
+	// server (e.g. an x-ui/DNS host abroad with no RouterOS API at all)
+	// could never be selected as ServerID, even though nothing about
+	// ServerID itself is Iran-only or otherwise geographically
+	// restricted. Mutually exclusive with ServerID in the UI (the admin
+	// either picks a managed router or types a label, never both) but
+	// both are nullable at the DB level so existing rows are unaffected.
+	ManualServerName *string `gorm:"type:varchar(255)"`
 	// LocationKey identifies the SAME location a sale's LocationKey does
 	// (Interface.ID/Group name/XuiPanel.ID, formatted as a string) -- see
 	// AccountingCustomerPayment.LocationKey's own doc comment. ServerID

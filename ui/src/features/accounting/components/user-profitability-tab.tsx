@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchUserProfitability } from '@/api/accounting.ts'
-import { formatCurrencyFa } from '@/features/reports/lib/format.ts'
+import { formatCurrencyFa, formatDateFa } from '@/features/reports/lib/format.ts'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state.tsx'
@@ -79,7 +79,7 @@ export function UserProfitabilityTab() {
                     >
                       {formatCurrencyFa(row.profit_toman)}
                     </TableCell>
-                    <TableCell>{row.paid_at}</TableCell>
+                    <TableCell>{formatDateFa(row.paid_at)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

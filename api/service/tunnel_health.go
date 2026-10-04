@@ -454,6 +454,27 @@ func tunnelInterfaceType(node model.GraphNode) string {
 
 func (s *TunnelHealthService) pollOneTunnel(node model.GraphNode, mtIface mikrotik.Interface, peers []mikrotik.WireGuardPeer, now time.Time) {
 	interfaceName := node.Name
+
+	// Every discovered tunnel always has a usable policy (seeded with
+	// safe defaults) so this -- and the decision engine further below --
+	// never has to special-case "no policy yet". Loaded up front (rather
+	// than only later, right before considerRemediation) specifically so
+	// the Enabled opt-out below can skip this tunnel BEFORE any
+	// detection/sample-recording/alerting happens for it, not just before
+	// remediation -- the admin's own explicit ask: "امکان غیرفعال‌کردن
+	// گزارش/شناسایی روی یک تانل خاص" (the ability to disable reporting/
+	// detection for one specific tunnel, for cases where the admin
+	// doesn't want this system interfering with that tunnel at all).
+	policy, err := s.policyService.GetOrCreateDefault(interfaceName)
+	if err != nil {
+		s.logger.Error("failed to load tunnel policy", zap.String("interface", interfaceName), zap.Error(err))
+		return
+	}
+	config := s.policyService.Parse(policy)
+	if !config.Enabled {
+		return
+	}
+
 	interfaceType := tunnelInterfaceType(node)
 	running := mtIface.Running == "true"
 	disabled := mtIface.Disabled == "true"
@@ -470,8 +491,8 @@ func (s *TunnelHealthService) pollOneTunnel(node model.GraphNode, mtIface mikrot
 	severity := s.computeSeverity(running, disabled, worstHandshakeAge, asymmetry)
 
 	var status model.TunnelHealthStatus
-	err := s.db.Where("interface_name = ?", interfaceName).First(&status).Error
-	isNew := err != nil
+	statusErr := s.db.Where("interface_name = ?", interfaceName).First(&status).Error
+	isNew := statusErr != nil
 	previousSeverity := "healthy"
 	if !isNew {
 		previousSeverity = status.Severity
@@ -484,6 +505,19 @@ func (s *TunnelHealthService) pollOneTunnel(node model.GraphNode, mtIface mikrot
 	status.WorstPeerLastHandshakeAgeSeconds = worstHandshakeAge
 	status.TxRxAsymmetryDetected = asymmetry
 	status.LastPolledAt = now
+
+	// ConfirmedDownSince: start the clock the moment this tunnel FIRST
+	// becomes confirmed_down, clear it the moment it recovers to healthy
+	// -- see that field's own doc comment for why considerRemediation
+	// needs this wall-clock anchor. Deliberately NOT reset on every
+	// confirmed_down tick (that would make the 3-minute deadline below
+	// unreachable, since the incident would never appear to have started
+	// more than one poll interval ago).
+	if severity == "confirmed_down" && previousSeverity != "confirmed_down" {
+		status.ConfirmedDownSince = &now
+	} else if severity == "healthy" {
+		status.ConfirmedDownSince = nil
+	}
 
 	// Cache this tick's resolved gateway IP ONLY while the tunnel is
 	// actually healthy -- see LastKnownGatewayIP's own doc comment for
@@ -521,16 +555,9 @@ func (s *TunnelHealthService) pollOneTunnel(node model.GraphNode, mtIface mikrot
 	// recordHealthScoreAndWarn's own doc comment).
 	s.recordHealthScoreAndWarn(interfaceName, running, disabled, worstHandshakeAge, asymmetry, severity, now)
 
-	// Every discovered tunnel always has a usable policy (seeded with
-	// safe defaults, Level3 disabled) so the decision engine below never
-	// has to special-case "no policy yet" -- see
-	// TunnelPolicyService.GetOrCreateDefault.
-	policy, err := s.policyService.GetOrCreateDefault(interfaceName)
-	if err != nil {
-		s.logger.Error("failed to load tunnel policy", zap.String("interface", interfaceName), zap.Error(err))
-		return
-	}
-
+	// policy/config were already loaded at the top of this function (see
+	// the Enabled opt-out check there) -- reused here rather than loaded
+	// a second time.
 	if severity == "confirmed_down" || severity == "suspect" {
 		// Root-cause diagnosis runs ONCE per incident, the moment a tunnel
 		// FIRST becomes confirmed_down (not on every tick it stays down,
@@ -1092,6 +1119,27 @@ func (s *TunnelHealthService) considerRemediation(interfaceName string, policy *
 		return
 	}
 
+	// Confirmed, reported bug fix: the sequential L1->L2->L3 escalation
+	// below only advances one level per poll tick the tunnel is STILL
+	// unhealthy, with no enforced wall-clock deadline -- during a
+	// multi-hour outage where each level's own gating (wait_seconds,
+	// anti-flapping cooldown, etc.) adds up, total time-to-failover could
+	// exceed what the admin expects ("ظرف حداکثر ۳ دقیقه سطح ۳ فعال
+	// شود"). If this incident has been confirmed_down for at least
+	// forceLevel3Deadline and Level 3 hasn't already run, jump straight
+	// to it regardless of lastAction's level -- bypassing the normal
+	// one-level-per-tick sequencing for this specific deadline, not
+	// replacing it (a short-lived incident that resolves within the
+	// deadline still goes through the normal L1->L2 escalation path
+	// first, since L1/L2 are cheaper and less disruptive than rebuilding
+	// an entirely new tunnel).
+	if lastAction == nil || lastAction.Level != "3" {
+		if s.confirmedDownDeadlineExceeded(interfaceName, now) {
+			s.attemptLevel3(interfaceName, config, now)
+			return
+		}
+	}
+
 	if lastAction == nil {
 		s.attemptLevel1(interfaceName, config, now)
 		return
@@ -1114,6 +1162,29 @@ func (s *TunnelHealthService) considerRemediation(interfaceName string, policy *
 	}
 	// lastAction.Level == "3": already built a new tunnel; nothing
 	// further to escalate to.
+}
+
+// forceLevel3Deadline is the maximum time a tunnel may remain
+// confirmed_down before considerRemediation forces Level 3, independent
+// of the normal one-level-per-poll-tick escalation sequencing -- see that
+// field's own doc comment and ConfirmedDownSince's doc comment.
+const forceLevel3Deadline = 3 * time.Minute
+
+// confirmedDownDeadlineExceeded reports whether interfaceName's current
+// incident (per TunnelHealthStatus.ConfirmedDownSince) has been running
+// longer than forceLevel3Deadline. Fails closed (returns false) on any
+// lookup error or when the tunnel isn't actually confirmed_down right
+// now (ConfirmedDownSince nil) -- this must never force an action for a
+// tunnel that isn't currently in an active incident.
+func (s *TunnelHealthService) confirmedDownDeadlineExceeded(interfaceName string, now time.Time) bool {
+	var status model.TunnelHealthStatus
+	if err := s.db.Where("interface_name = ?", interfaceName).First(&status).Error; err != nil {
+		return false
+	}
+	if status.ConfirmedDownSince == nil {
+		return false
+	}
+	return now.Sub(*status.ConfirmedDownSince) >= forceLevel3Deadline
 }
 
 // isInBootGrace implements spec section ب-4 method 6: reads RouterOS's

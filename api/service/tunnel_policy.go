@@ -14,6 +14,14 @@ import (
 // verbatim, so an admin's exported/hand-edited policy JSON round-trips
 // without translation.
 type TunnelPolicyConfig struct {
+	// Enabled (confirmed, reported feature request): lets the admin
+	// exclude one specific tunnel from this entire system -- detection,
+	// alerting, and remediation alike -- for cases where the admin
+	// doesn't want it interfering with that tunnel at all. Defaults to
+	// true (see DefaultTunnelPolicyConfig) so every existing tunnel's
+	// behavior is unchanged unless the admin explicitly opts it out.
+	Enabled bool `json:"enabled"`
+
 	Detection struct {
 		PingFailThreshold          int     `json:"ping_fail_threshold"`
 		TxRxAsymmetryWindowMinutes int     `json:"tx_rx_asymmetry_window_minutes"`
@@ -85,6 +93,7 @@ type TunnelPolicyConfig struct {
 // about it at all.
 func DefaultTunnelPolicyConfig() TunnelPolicyConfig {
 	var c TunnelPolicyConfig
+	c.Enabled = true
 	c.Detection.PingFailThreshold = 3
 	c.Detection.TxRxAsymmetryWindowMinutes = 3
 	c.Detection.TxRxAsymmetryRatio = 0.05

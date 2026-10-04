@@ -149,8 +149,13 @@ func (s *AccountingService) DeletePartner(id uint) error {
 // --- Costs ---
 
 type CreateCostInput struct {
-	PartnerID              uint
-	ServerID               *uint
+	PartnerID uint
+	ServerID  *uint
+	// ManualServerName: see model.AccountingCost.ManualServerName's own
+	// doc comment. Cleared to nil by CreateCost/UpdateCost whenever
+	// ServerID is set -- a cost belongs to at most one of a managed
+	// router or a free-text label, never both.
+	ManualServerName       *string
 	Protocol               *string
 	LocationKey            *string
 	AmountToman            int64
@@ -219,6 +224,16 @@ func (s *AccountingService) ServerNamesByID() (map[uint]string, error) {
 	return m, nil
 }
 
+// manualServerNameOrNil enforces the "at most one of ServerID or
+// ManualServerName" invariant server-side -- never trusts the client to
+// have cleared one when setting the other.
+func manualServerNameOrNil(serverID *uint, manualServerName *string) *string {
+	if serverID != nil {
+		return nil
+	}
+	return manualServerName
+}
+
 func (s *AccountingService) CreateCost(input CreateCostInput) (*model.AccountingCost, error) {
 	var partner model.AccountingPartner
 	if err := s.db.First(&partner, input.PartnerID).Error; err != nil {
@@ -228,6 +243,7 @@ func (s *AccountingService) CreateCost(input CreateCostInput) (*model.Accounting
 	cost := model.AccountingCost{
 		PartnerID:              input.PartnerID,
 		ServerID:               input.ServerID,
+		ManualServerName:       manualServerNameOrNil(input.ServerID, input.ManualServerName),
 		Protocol:               input.Protocol,
 		LocationKey:            input.LocationKey,
 		AmountToman:            input.AmountToman,
@@ -264,6 +280,7 @@ func (s *AccountingService) UpdateCost(id uint, input CreateCostInput) (*model.A
 
 	cost.PartnerID = input.PartnerID
 	cost.ServerID = input.ServerID
+	cost.ManualServerName = manualServerNameOrNil(input.ServerID, input.ManualServerName)
 	cost.Protocol = input.Protocol
 	cost.LocationKey = input.LocationKey
 	cost.AmountToman = input.AmountToman

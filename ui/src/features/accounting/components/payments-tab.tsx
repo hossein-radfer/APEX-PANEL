@@ -12,7 +12,7 @@ import {
   uploadReceipt,
 } from '@/api/accounting.ts'
 import { AccountingPayment } from '@/schema/accounting.ts'
-import { formatCurrencyFa } from '@/features/reports/lib/format.ts'
+import { formatCurrencyFa, formatDateFa } from '@/features/reports/lib/format.ts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -267,7 +267,7 @@ export function PaymentsTab() {
                     >
                       {formatCurrencyFa(payment.profit_toman)}
                     </TableCell>
-                    <TableCell>{payment.paid_at}</TableCell>
+                    <TableCell>{formatDateFa(payment.paid_at)}</TableCell>
                     <TableCell>
                       {payment.has_receipt ? (
                         <a

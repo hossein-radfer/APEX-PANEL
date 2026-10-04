@@ -171,6 +171,7 @@ func (c *AccountingController) ListCosts(ctx echo.Context) error {
 			PartnerID:              cst.PartnerID,
 			PartnerName:            partnerNames[cst.PartnerID],
 			ServerID:               cst.ServerID,
+			ManualServerName:       cst.ManualServerName,
 			Protocol:               cst.Protocol,
 			LocationKey:            cst.LocationKey,
 			AmountToman:            cst.AmountToman,
@@ -205,7 +206,8 @@ func (c *AccountingController) toCostResponse(cost *model.AccountingCost) schema
 	partnerName, _ := c.accountingService.PartnerName(cost.PartnerID)
 	resp := schema.AccountingCostResponse{
 		Id: cost.ID, PartnerID: cost.PartnerID, PartnerName: partnerName,
-		ServerID: cost.ServerID, Protocol: cost.Protocol, LocationKey: cost.LocationKey,
+		ServerID: cost.ServerID, ManualServerName: cost.ManualServerName,
+		Protocol: cost.Protocol, LocationKey: cost.LocationKey,
 		AmountToman: cost.AmountToman, Description: cost.Description,
 		PaidAt: formatOptionalDate(cost.PaidAt), DueAt: formatOptionalDate(cost.DueAt),
 		RecurrenceIntervalDays: cost.RecurrenceIntervalDays, NextDueAt: formatOptionalDate(cost.NextDueAt),
@@ -242,6 +244,7 @@ func bindCostRequest(ctx echo.Context) (*service.CreateCostInput, error) {
 	return &service.CreateCostInput{
 		PartnerID:              req.PartnerID,
 		ServerID:               req.ServerID,
+		ManualServerName:       req.ManualServerName,
 		Protocol:               req.Protocol,
 		LocationKey:            req.LocationKey,
 		AmountToman:            req.AmountToman,

@@ -77,6 +77,17 @@ func (s *V2RayPanelHealthService) SetMikrotikAdaptor(adaptor *mikrotik.Adaptor) 
 	s.mikrotikAdaptor = adaptor
 }
 
+// panelHealthFailureThreshold (confirmed, reported bug fix): a single
+// failed x-ui login attempt (a brief resource spike during a container
+// restart, a momentary network hiccup) used to immediately flip Status
+// to "error" and fire a Telegram alert -- zero debounce, unlike
+// TunnelHealthService's own infrastructure-tunnel engine (3 consecutive
+// bad samples required). Requiring this many consecutive failed polls
+// before transitioning/alerting closes that gap; a single successful
+// login resets the counter to 0 immediately (fast recovery, slow
+// failure).
+const panelHealthFailureThreshold = 2
+
 // Poll checks every registered x-ui panel's own reachability via a fresh
 // login attempt -- independent of V2RaySyncService's own usage-sync
 // tick, so a slow/failing tunnel-ai check can never interfere with
@@ -99,7 +110,7 @@ func (s *V2RayPanelHealthService) pollOnePanel(panel model.XuiPanel, now time.Ti
 	defer cancel()
 
 	_, loginErr := xui.Login(ctx, panel)
-	reachable := loginErr == nil
+	loginSucceeded := loginErr == nil
 
 	var status model.XuiPanel
 	if err := s.db.First(&status, panel.ID).Error; err != nil {
@@ -107,8 +118,21 @@ func (s *V2RayPanelHealthService) pollOnePanel(panel model.XuiPanel, now time.Ti
 	}
 	wasHealthy := status.Status != "error"
 
+	// Debounce (see panelHealthFailureThreshold's doc comment): a
+	// successful login always resets the streak and is healthy
+	// immediately; a failed login only flips to "error"/alerts once the
+	// consecutive count reaches the threshold, so a single transient
+	// hiccup no longer triggers a false alarm on its own.
+	consecutiveFailures := 0
+	reachable := true
+	if !loginSucceeded {
+		consecutiveFailures = status.ConsecutiveLoginFailures + 1
+		reachable = wasHealthy && consecutiveFailures < panelHealthFailureThreshold
+	}
+
 	updates := map[string]interface{}{
-		"last_synced_at": now,
+		"last_synced_at":             now,
+		"consecutive_login_failures": consecutiveFailures,
 	}
 	if reachable {
 		updates["status"] = "active"

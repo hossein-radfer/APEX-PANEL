@@ -108,6 +108,15 @@ func StartHttpServer(
 	// cmd/main.go's scheduler, never here.
 	v2raySyncServiceForWallet := service.NewV2RaySyncService(db, xuiPanelService)
 	resellerService.SetV2RayResumer(v2raySyncServiceForWallet)
+	// Confirmed, reported bug fix: a brand-new package/location's own
+	// config link is already fetched immediately (see CreatePackage/
+	// addPackageLocation's doc comments), but the combined subscription
+	// blob actually served to the customer's V2Ray client app used to
+	// wait for the next periodic SyncPackageUsage tick (up to
+	// TRAFFIC_JOB_INTERVAL seconds) -- see SetConfigRecombiner's doc
+	// comment. Reuses this entrypoint's own v2raySyncServiceForWallet
+	// instance rather than constructing a third one.
+	v2rayPackageService.SetConfigRecombiner(v2raySyncServiceForWallet)
 
 	reportsService := service.NewReportsService(db)
 	reportsLiveService := service.NewReportsLiveService(db, mikrotikAdaptor)

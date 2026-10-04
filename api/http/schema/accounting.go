@@ -12,11 +12,16 @@ type CreatePartnerRequest struct {
 }
 
 type AccountingCostResponse struct {
-	Id                     uint    `json:"id"`
-	PartnerID              uint    `json:"partner_id"`
-	PartnerName            string  `json:"partner_name"`
-	ServerID               *uint   `json:"server_id,omitempty"`
-	ServerName             *string `json:"server_name,omitempty"`
+	Id          uint    `json:"id"`
+	PartnerID   uint    `json:"partner_id"`
+	PartnerName string  `json:"partner_name"`
+	ServerID    *uint   `json:"server_id,omitempty"`
+	ServerName  *string `json:"server_name,omitempty"`
+	// ManualServerName is set only when ServerID is nil -- a free-text
+	// label for a server not present in the Server table (e.g. a foreign
+	// VPS with no RouterOS API), see model.AccountingCost.ManualServerName's
+	// own doc comment.
+	ManualServerName       *string `json:"manual_server_name,omitempty"`
 	Protocol               *string `json:"protocol,omitempty"`
 	LocationKey            *string `json:"location_key,omitempty"`
 	LocationLabel          *string `json:"location_label,omitempty"`
@@ -29,8 +34,13 @@ type AccountingCostResponse struct {
 }
 
 type CreateCostRequest struct {
-	PartnerID              uint    `json:"partner_id" validate:"required"`
-	ServerID               *uint   `json:"server_id,omitempty"`
+	PartnerID uint  `json:"partner_id" validate:"required"`
+	ServerID  *uint `json:"server_id,omitempty"`
+	// ManualServerName: see AccountingCostResponse's own doc comment.
+	// Ignored by the service when ServerID is also set (ServerID wins --
+	// a cost belongs to at most one of a managed router or a free-text
+	// label, never both).
+	ManualServerName       *string `json:"manual_server_name,omitempty" validate:"omitempty,max=255"`
 	Protocol               *string `json:"protocol,omitempty" validate:"omitempty,oneof=wireguard user_manager v2ray"`
 	LocationKey            *string `json:"location_key,omitempty"`
 	AmountToman            int64   `json:"amount_toman" validate:"required,min=1"`

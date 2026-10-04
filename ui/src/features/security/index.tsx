@@ -1,3 +1,4 @@
+import { CardErrorBoundary } from '@/components/card-error-boundary.tsx'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ProfileDropdown } from '@/components/profile-dropdown'
@@ -29,11 +30,21 @@ export default function SecurityPage() {
         </div>
 
         <div className='space-y-4'>
-          <GeoIPUploadCard />
-          <ThreatsCard />
-          <IdentitiesCard />
-          <EtherTrafficCard />
-          <RetentionCard />
+          <CardErrorBoundary>
+            <GeoIPUploadCard />
+          </CardErrorBoundary>
+          <CardErrorBoundary>
+            <ThreatsCard />
+          </CardErrorBoundary>
+          <CardErrorBoundary>
+            <IdentitiesCard />
+          </CardErrorBoundary>
+          <CardErrorBoundary>
+            <EtherTrafficCard />
+          </CardErrorBoundary>
+          <CardErrorBoundary>
+            <RetentionCard />
+          </CardErrorBoundary>
         </div>
       </Main>
     </>

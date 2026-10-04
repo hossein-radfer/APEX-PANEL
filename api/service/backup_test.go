@@ -161,3 +161,83 @@ func TestStageRestoreRejectsTooSmallContent(t *testing.T) {
 		t.Fatalf("expected StageRestore to reject too-small content, got nil error")
 	}
 }
+
+// TestRetainAsLatestAutoBackup_MovesFileToFixedPath is the regression
+// test for the confirmed, reported feature request: the scheduled
+// automatic backup must persist on disk at a known, stable path (not the
+// ephemeral timestamped temp path CreateBackup returns).
+func TestRetainAsLatestAutoBackup_MovesFileToFixedPath(t *testing.T) {
+	db, dbPath := openFileBackedTestDB(t)
+	dataDir := filepath.Dir(dbPath)
+	svc := NewBackupService(db, "sqlite", dbPath, dataDir)
+
+	tempPath, cleanup, err := svc.CreateBackup()
+	if err != nil {
+		t.Fatalf("CreateBackup failed: %v", err)
+	}
+	defer cleanup()
+
+	retainedPath, err := svc.RetainAsLatestAutoBackup(tempPath)
+	if err != nil {
+		t.Fatalf("RetainAsLatestAutoBackup failed: %v", err)
+	}
+
+	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
+		t.Errorf("expected the original temp backup file to no longer exist after retention, stat err: %v", err)
+	}
+	if _, err := os.Stat(retainedPath); err != nil {
+		t.Fatalf("expected retained backup file to exist at %s: %v", retainedPath, err)
+	}
+	if filepath.Base(retainedPath) != autoBackupRetainedFileName {
+		t.Errorf("expected retained file name %q, got %q", autoBackupRetainedFileName, filepath.Base(retainedPath))
+	}
+}
+
+// TestRetainAsLatestAutoBackup_DeletesPreviousVersionFirst is the second
+// half of the same regression test: when a new scheduled backup is
+// retained, any PREVIOUS retained backup must be deleted first -- never
+// accumulating multiple versions.
+func TestRetainAsLatestAutoBackup_DeletesPreviousVersionFirst(t *testing.T) {
+	db, dbPath := openFileBackedTestDB(t)
+	dataDir := filepath.Dir(dbPath)
+	svc := NewBackupService(db, "sqlite", dbPath, dataDir)
+
+	firstTemp, firstCleanup, err := svc.CreateBackup()
+	if err != nil {
+		t.Fatalf("first CreateBackup failed: %v", err)
+	}
+	defer firstCleanup()
+	firstRetained, err := svc.RetainAsLatestAutoBackup(firstTemp)
+	if err != nil {
+		t.Fatalf("first RetainAsLatestAutoBackup failed: %v", err)
+	}
+
+	secondTemp, secondCleanup, err := svc.CreateBackup()
+	if err != nil {
+		t.Fatalf("second CreateBackup failed: %v", err)
+	}
+	defer secondCleanup()
+	secondRetained, err := svc.RetainAsLatestAutoBackup(secondTemp)
+	if err != nil {
+		t.Fatalf("second RetainAsLatestAutoBackup failed: %v", err)
+	}
+
+	if firstRetained != secondRetained {
+		t.Fatalf("expected both retentions to resolve to the same fixed path, got %q then %q", firstRetained, secondRetained)
+	}
+
+	backupDir := filepath.Join(dataDir, "backups")
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("failed to read backup dir: %v", err)
+	}
+	dbFileCount := 0
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".db" {
+			dbFileCount++
+		}
+	}
+	if dbFileCount != 1 {
+		t.Fatalf("expected exactly 1 retained .db backup file after two scheduled backups, found %d", dbFileCount)
+	}
+}
