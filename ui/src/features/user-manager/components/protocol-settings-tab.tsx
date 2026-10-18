@@ -46,8 +46,15 @@ const emptyState: ProtocolFormState = {
   notes: '',
 }
 
-function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) {
-  const { data: configs = [], isLoading } = useUserManagerProtocolConfigsQuery()
+function ProtocolConfigCard({
+  protocol,
+  serverId,
+}: {
+  protocol: ProtocolConfigProtocol
+  serverId: number | undefined
+}) {
+  const { data: configs = [], isLoading } =
+    useUserManagerProtocolConfigsQuery(serverId)
   const { mutateAsync: upsert, isPending } =
     useUpsertUserManagerProtocolConfigMutation()
   const {
@@ -97,6 +104,7 @@ function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) 
 
     try {
       await upsert({
+        server_id: serverId,
         protocol,
         port,
         server_address: state.server_address || undefined,
@@ -116,9 +124,9 @@ function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) 
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0]
-    if (!file) return
+    if (!file || serverId === undefined) return
     try {
-      await uploadCertificate({ protocol, file })
+      await uploadCertificate({ protocol, serverId, file })
       toast.success('فایل گواهی/کیفیت با موفقیت آپلود شد.', {
         duration: 5000,
       })
@@ -133,9 +141,9 @@ function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) 
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0]
-    if (!file) return
+    if (!file || serverId === undefined) return
     try {
-      await uploadClientApp({ protocol, file })
+      await uploadClientApp({ protocol, serverId, file })
       toast.success('اپلیکیشن کلاینت با موفقیت آپلود شد.', { duration: 5000 })
     } catch {
       toast.error('آپلود فایل ناموفق بود. دوباره تلاش کنید.')
@@ -145,10 +153,11 @@ function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) 
   }
 
   const handleDownloadCertificate = async () => {
+    if (serverId === undefined) return
     setIsCertificateDownloading(true)
     try {
       const { blob, filename } =
-        await fetchUserManagerProtocolCertificateFile(protocol)
+        await fetchUserManagerProtocolCertificateFile(protocol, serverId)
       triggerBlobDownload(
         blob,
         filename ?? filenameWithFallbackExtension(`${protocol}-certificate`, blob)
@@ -161,10 +170,11 @@ function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) 
   }
 
   const handleDownloadClientApp = async () => {
+    if (serverId === undefined) return
     setIsClientAppDownloading(true)
     try {
       const { blob, filename } =
-        await fetchUserManagerProtocolClientAppFile(protocol)
+        await fetchUserManagerProtocolClientAppFile(protocol, serverId)
       triggerBlobDownload(
         blob,
         filename ?? filenameWithFallbackExtension(`${protocol}-client-app`, blob)
@@ -177,16 +187,20 @@ function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) 
   }
 
   const handleConfirmDelete = async () => {
+    if (serverId === undefined) {
+      setDeleteTarget(null)
+      return
+    }
     if (deleteTarget === 'certificate') {
       try {
-        await deleteCertificate(protocol)
+        await deleteCertificate({ protocol, serverId })
         toast.success('فایل گواهی/کیفیت حذف شد.', { duration: 5000 })
       } catch {
         toast.error('حذف فایل ناموفق بود. دوباره تلاش کنید.')
       }
     } else if (deleteTarget === 'client-app') {
       try {
-        await deleteClientApp(protocol)
+        await deleteClientApp({ protocol, serverId })
         toast.success('اپلیکیشن کلاینت حذف شد.', { duration: 5000 })
       } catch {
         toast.error('حذف فایل ناموفق بود. دوباره تلاش کنید.')
@@ -411,17 +425,33 @@ function ProtocolConfigCard({ protocol }: { protocol: ProtocolConfigProtocol }) 
   )
 }
 
-export function ProtocolSettingsTab() {
+// serverId is the server these cards are being configured for -- each
+// protocol can have a different port/address on each of the admin's
+// servers (a confirmed, reported bug: before this existed, one row covered
+// every server, so whichever server's settings were entered last silently
+// became "the" port/address shown to every customer, including customers
+// on a different server). Passed down from the parent page's shared server
+// picker (the same one Groups/Profiles already use); undefined only before
+// that picker has resolved an initial server.
+export function ProtocolSettingsTab({
+  serverId,
+}: {
+  serverId: number | undefined
+}) {
   return (
     <div className='space-y-4'>
       <p className='text-muted-foreground text-sm'>
-        Record the port each protocol is configured on in Winbox. This panel
-        never changes RouterOS&apos;s actual server settings -- it only uses
-        this to build correct share/connection-info links.
+        پورتی که هر پروتکل در Winbox روی آن تنظیم شده را اینجا ثبت کنید. این
+        پنل هرگز تنظیمات واقعی سرور را در RouterOS تغییر نمی‌دهد -- فقط از
+        این اطلاعات برای ساخت لینک‌های صحیح اشتراک/اتصال استفاده می‌کند.
       </p>
       <div className='grid gap-4 md:grid-cols-2'>
         {PROTOCOL_CONFIG_PROTOCOLS.map((protocol) => (
-          <ProtocolConfigCard key={protocol} protocol={protocol} />
+          <ProtocolConfigCard
+            key={protocol}
+            protocol={protocol}
+            serverId={serverId}
+          />
         ))}
       </div>
     </div>

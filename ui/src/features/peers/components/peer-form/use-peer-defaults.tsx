@@ -107,6 +107,24 @@ export function usePeerDefaults({
     }
   }, [shouldRefetch, isEdit, refetchInterfaces, refetchServers])
 
+  // resolveServerForInterface finds the server a given interface actually
+  // lives on, falling back to serversList[0] only when that lookup can't
+  // be made (e.g. the reseller-scoped endpoints list doesn't carry a
+  // matching id, or serversList hasn't loaded a matching entry yet) --
+  // this is the single source of truth both the initial-default effect
+  // and the interface-change effect below use, so a multi-server install
+  // never silently defaults to the WRONG server's IP just because it
+  // happens to be first in the list.
+  const resolveServerForInterface = (interfaceId: number | undefined) => {
+    if (serversList.length === 0) return undefined
+    const iface = interfacesList.find((i) => i.id === interfaceId)
+    const matched =
+      iface !== undefined
+        ? serversList.find((s) => s.id === iface.server_id)
+        : undefined
+    return matched ?? serversList[0]
+  }
+
   useEffect(() => {
     if (
       !isEdit &&
@@ -117,13 +135,13 @@ export function usePeerDefaults({
       !isServersLoading
     ) {
       const defaultInterface = interfacesList[0]
-      const defaultServer = serversList[0]
+      const defaultServer = resolveServerForInterface(defaultInterface.id)
 
       form.reset((prev) => ({
         ...prev,
         interface_name: defaultInterface.name,
         interface_id: defaultInterface.id,
-        endpoint: defaultServer.ip_address,
+        endpoint: defaultServer?.ip_address ?? '',
         persistent_keepalive: '00:00:25',
       }))
 
@@ -137,6 +155,22 @@ export function usePeerDefaults({
     isInterfacesLoading,
     isServersLoading,
   ])
+
+  // Re-derive endpoint whenever the admin changes the interface dropdown
+  // AFTER the initial mount/default-fill above -- a confirmed gap:
+  // previously only allowed_address was re-fetched on interface_id change
+  // (see the effect below), leaving endpoint silently stuck on whichever
+  // server the FIRST default resolved to, even after switching to an
+  // interface that lives on a different server entirely.
+  useEffect(() => {
+    if (!isEdit && hasSetDefaults.current && interfaceId) {
+      const server = resolveServerForInterface(interfaceId)
+      if (server) {
+        form.setValue('endpoint', server.ip_address)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interfaceId, isEdit, interfacesList, serversList])
 
   // Always fetches a fresh allowed_address from the backend on every
   // interface_id change (usePeerAllowedAddressMutation is a mutation, not a

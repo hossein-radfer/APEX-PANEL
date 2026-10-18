@@ -81,6 +81,7 @@ func openTunnelHealthTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to open test db: %v", err)
 	}
 	if err := db.AutoMigrate(
+		&model.Server{},
 		&model.SystemConfig{},
 		&model.TunnelPolicy{},
 		&model.TunnelActionLog{},
@@ -97,15 +98,26 @@ func openTunnelHealthTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// newTestTunnelHealthService seeds an active model.Server row and
+// registers the fake router's client under its real ID -- MwpClients is
+// keyed by server ID (see its own doc comment), and TunnelHealthService.
+// resolveActiveServerID resolves it the same way Poll/ProbeBackupPaths do
+// in production (the lowest-ID active server).
 func newTestTunnelHealthService(t *testing.T, db *gorm.DB, srv *httptest.Server) *TunnelHealthService {
 	t.Helper()
+
+	server := model.Server{Name: "test-server", IsActive: true}
+	if err := db.Create(&server).Error; err != nil {
+		t.Fatalf("failed to seed server: %v", err)
+	}
+
 	mwpClients := common.NewMwpClients(db)
 	isSSL := false
 	// httptest.Server URLs are "http://127.0.0.1:PORT" -- split host:port
 	// back out since SetClient rebuilds the URL from IPAddress+APIPort.
 	addr := srv.Listener.Addr().String() // "127.0.0.1:PORT"
 	host, port := addr[:len(addr)-len(":")-len(portOf(addr))], portOf(addr)
-	mwpClients.SetClient(&schema.CreateServerRequest{
+	mwpClients.SetClient(server.ID, &schema.CreateServerRequest{
 		Name:      "test-server",
 		IPAddress: host,
 		APIPort:   port,
@@ -114,7 +126,14 @@ func newTestTunnelHealthService(t *testing.T, db *gorm.DB, srv *httptest.Server)
 		Password:  "admin",
 	})
 	adaptor := mikrotik.NewAdaptor(mwpClients)
-	return NewTunnelHealthService(db, adaptor, nil)
+	svc := NewTunnelHealthService(db, adaptor, nil)
+	// This test calls attemptLevel2 directly, bypassing Poll (the only
+	// production entry point that resolves this field) -- set it directly
+	// here, same test-package-internal access pattern this file already
+	// relies on for every other unexported TunnelHealthService method it
+	// calls.
+	svc.activeServerID = server.ID
+	return svc
 }
 
 func portOf(addr string) string {
@@ -309,6 +328,7 @@ func TestAttemptLevel2_FallsBackToLastKnownGatewayWhenImmediateGwBlank(t *testin
 	// Seed the cache as if a prior HEALTHY poll had already observed
 	// ImmediateGw="100.100.77.1%gre-TR" for this interface.
 	if err := db.Create(&model.TunnelHealthStatus{
+		ServerID:           svc.activeServerID,
 		InterfaceName:      "gre-TR",
 		Severity:           "confirmed_down",
 		LastKnownGatewayIP: "100.100.77.1",

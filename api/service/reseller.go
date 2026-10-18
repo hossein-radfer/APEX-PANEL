@@ -495,6 +495,16 @@ func (r *Reseller) UpdateReseller(id uint, req *schema.UpdateResellerRequest) (*
 		willBeUnderUserManagerQuota := *req.UserManagerQuotaBytes >= res.UserManagerUsedBytes
 		userManagerQuotaRaised = wasOverUserManagerQuota && willBeUnderUserManagerQuota
 
+		// Mirrors QuotaBytes' own identical reset above: let the low-quota
+		// warning fire again next time, rather than staying permanently
+		// silenced from a warning sent under the old, smaller quota.
+		if *req.UserManagerQuotaBytes > 0 {
+			newRemainingPercent := (*req.UserManagerQuotaBytes - res.UserManagerUsedBytes) * 100 / *req.UserManagerQuotaBytes
+			if newRemainingPercent > 10 {
+				res.UserManagerQuotaWarningSent = false
+			}
+		}
+
 		res.UserManagerQuotaBytes = req.UserManagerQuotaBytes
 	}
 	if req.ClearUserManagerMaxAccounts != nil && *req.ClearUserManagerMaxAccounts {
@@ -541,6 +551,16 @@ func (r *Reseller) UpdateReseller(id uint, req *schema.UpdateResellerRequest) (*
 		willBeUnderV2RayQuota := *req.V2RayQuotaBytes >= liveV2RayUsed
 		v2rayQuotaRaised = wasOverV2RayQuota && willBeUnderV2RayQuota
 
+		// Mirrors QuotaBytes'/UserManagerQuotaBytes' own identical reset
+		// above, against the live sum for the same reason wasOverV2RayQuota/
+		// willBeUnderV2RayQuota do just above.
+		if *req.V2RayQuotaBytes > 0 {
+			newRemainingPercent := (*req.V2RayQuotaBytes - liveV2RayUsed) * 100 / *req.V2RayQuotaBytes
+			if newRemainingPercent > 10 {
+				res.V2RayQuotaWarningSent = false
+			}
+		}
+
 		res.V2RayQuotaBytes = req.V2RayQuotaBytes
 	}
 	if req.ClearV2RayMaxPackages != nil && *req.ClearV2RayMaxPackages {
@@ -568,6 +588,16 @@ func (r *Reseller) UpdateReseller(id uint, req *schema.UpdateResellerRequest) (*
 		wasOverDNSQuota := res.DNSQuotaBytes != nil && liveDNSUsed > *res.DNSQuotaBytes
 		willBeUnderDNSQuota := *req.DNSQuotaBytes >= liveDNSUsed
 		dnsQuotaRaised = wasOverDNSQuota && willBeUnderDNSQuota
+
+		// Mirrors QuotaBytes'/UserManagerQuotaBytes'/V2RayQuotaBytes' own
+		// identical reset above, against the live sum for the same reason
+		// wasOverDNSQuota/willBeUnderDNSQuota do just above.
+		if *req.DNSQuotaBytes > 0 {
+			newRemainingPercent := (*req.DNSQuotaBytes - liveDNSUsed) * 100 / *req.DNSQuotaBytes
+			if newRemainingPercent > 10 {
+				res.DNSQuotaWarningSent = false
+			}
+		}
 
 		res.DNSQuotaBytes = req.DNSQuotaBytes
 	}
@@ -756,7 +786,7 @@ func (r *Reseller) resumeQuotaSuspendedPeers(tx *gorm.DB, resellerID uint) error
 
 	for _, p := range peers {
 		if r.mikrotikAdaptor != nil {
-			if _, err := r.mikrotikAdaptor.UpdateWgPeer(context.Background(), p.PeerID, mikrotik.WireGuardPeer{Disabled: strconv.FormatBool(false)}); err != nil {
+			if _, err := r.mikrotikAdaptor.ForServer(p.ServerID).UpdateWgPeer(context.Background(), p.PeerID, mikrotik.WireGuardPeer{Disabled: strconv.FormatBool(false)}); err != nil {
 				r.logger.Error("failed to re-enable peer on Mikrotik", zap.String("peerID", p.PeerID), zap.Error(err))
 				continue
 			}
@@ -790,7 +820,7 @@ func (r *Reseller) resumeQuotaSuspendedUserManagerAccounts(tx *gorm.DB, reseller
 
 	for _, account := range accounts {
 		if r.mikrotikAdaptor != nil {
-			if _, err := r.mikrotikAdaptor.SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "false"); err != nil {
+			if _, err := r.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "false"); err != nil {
 				r.logger.Error("failed to re-enable user manager account on Mikrotik", zap.String("username", account.Username), zap.Error(err))
 				continue
 			}
@@ -963,19 +993,29 @@ func (r *Reseller) IsInterfaceAssigned(resellerID uint, interfaceID uint) (bool,
 }
 
 // SetAssignedUserManagerGroups replaces the full set of RouterOS User
-// Manager groups a reseller is allowed to assign when creating accounts --
-// mirrors SetAssignedInterfaces exactly. Group names are not validated
-// against a local table (RouterOS is the only source of truth for which
-// groups exist, and this panel doesn't cache them beyond a live listing),
-// unlike interface IDs which ARE checked against the local Interface table.
-func (r *Reseller) SetAssignedUserManagerGroups(resellerID uint, groupNames []string) error {
+// Manager groups a reseller is allowed to assign, ON ONE SERVER, when
+// creating accounts -- mirrors SetAssignedInterfaces exactly. Only rows for
+// this serverID are replaced; another server's grants for the same
+// reseller are untouched, since a group name like "default" exists
+// independently per server (see ResellerUserManagerGroup.ServerID's own doc
+// comment) and a reseller may legitimately be granted different groups on
+// different servers. Group names are not validated against a local table
+// (RouterOS is the only source of truth for which groups exist, and this
+// panel doesn't cache them beyond a live listing), unlike interface IDs
+// which ARE checked against the local Interface table.
+func (r *Reseller) SetAssignedUserManagerGroups(resellerID uint, reqServerID *uint, groupNames []string) error {
 	var reseller model.Reseller
 	if err := r.db.First(&reseller, resellerID).Error; err != nil {
 		return err
 	}
 
+	serverID, err := resolveServerID(r.db, reqServerID)
+	if err != nil {
+		return err
+	}
+
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Unscoped().Where("reseller_id = ?", resellerID).Delete(&model.ResellerUserManagerGroup{}).Error; err != nil {
+		if err := tx.Unscoped().Where("reseller_id = ? AND server_id = ?", resellerID, serverID).Delete(&model.ResellerUserManagerGroup{}).Error; err != nil {
 			return err
 		}
 
@@ -985,7 +1025,7 @@ func (r *Reseller) SetAssignedUserManagerGroups(resellerID uint, groupNames []st
 
 		links := make([]model.ResellerUserManagerGroup, 0, len(groupNames))
 		for _, name := range groupNames {
-			links = append(links, model.ResellerUserManagerGroup{ResellerID: resellerID, GroupName: name})
+			links = append(links, model.ResellerUserManagerGroup{ResellerID: resellerID, ServerID: serverID, GroupName: name})
 		}
 
 		return tx.Create(&links).Error
@@ -993,10 +1033,15 @@ func (r *Reseller) SetAssignedUserManagerGroups(resellerID uint, groupNames []st
 }
 
 // GetAssignedUserManagerGroups returns the group names a reseller is
-// allowed to use.
-func (r *Reseller) GetAssignedUserManagerGroups(resellerID uint) ([]string, error) {
+// allowed to use on the given server.
+func (r *Reseller) GetAssignedUserManagerGroups(resellerID uint, reqServerID *uint) ([]string, error) {
+	serverID, err := resolveServerID(r.db, reqServerID)
+	if err != nil {
+		return nil, err
+	}
+
 	var links []model.ResellerUserManagerGroup
-	if err := r.db.Where("reseller_id = ?", resellerID).Find(&links).Error; err != nil {
+	if err := r.db.Where("reseller_id = ? AND server_id = ?", resellerID, serverID).Find(&links).Error; err != nil {
 		return nil, err
 	}
 
@@ -1007,11 +1052,12 @@ func (r *Reseller) GetAssignedUserManagerGroups(resellerID uint) ([]string, erro
 	return names, nil
 }
 
-// IsUserManagerGroupAssigned checks whether a reseller may use the given group.
-func (r *Reseller) IsUserManagerGroupAssigned(resellerID uint, groupName string) (bool, error) {
+// IsUserManagerGroupAssigned checks whether a reseller may use the given
+// group on the given server.
+func (r *Reseller) IsUserManagerGroupAssigned(resellerID, serverID uint, groupName string) (bool, error) {
 	var count int64
 	if err := r.db.Model(&model.ResellerUserManagerGroup{}).
-		Where("reseller_id = ? AND group_name = ?", resellerID, groupName).
+		Where("reseller_id = ? AND server_id = ? AND group_name = ?", resellerID, serverID, groupName).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -1020,14 +1066,19 @@ func (r *Reseller) IsUserManagerGroupAssigned(resellerID uint, groupName string)
 
 // SetAssignedUserManagerProfiles mirrors SetAssignedUserManagerGroups
 // exactly, for RouterOS User Manager profiles.
-func (r *Reseller) SetAssignedUserManagerProfiles(resellerID uint, profileNames []string) error {
+func (r *Reseller) SetAssignedUserManagerProfiles(resellerID uint, reqServerID *uint, profileNames []string) error {
 	var reseller model.Reseller
 	if err := r.db.First(&reseller, resellerID).Error; err != nil {
 		return err
 	}
 
+	serverID, err := resolveServerID(r.db, reqServerID)
+	if err != nil {
+		return err
+	}
+
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Unscoped().Where("reseller_id = ?", resellerID).Delete(&model.ResellerUserManagerProfile{}).Error; err != nil {
+		if err := tx.Unscoped().Where("reseller_id = ? AND server_id = ?", resellerID, serverID).Delete(&model.ResellerUserManagerProfile{}).Error; err != nil {
 			return err
 		}
 
@@ -1037,7 +1088,7 @@ func (r *Reseller) SetAssignedUserManagerProfiles(resellerID uint, profileNames 
 
 		links := make([]model.ResellerUserManagerProfile, 0, len(profileNames))
 		for _, name := range profileNames {
-			links = append(links, model.ResellerUserManagerProfile{ResellerID: resellerID, ProfileName: name})
+			links = append(links, model.ResellerUserManagerProfile{ResellerID: resellerID, ServerID: serverID, ProfileName: name})
 		}
 
 		return tx.Create(&links).Error
@@ -1045,10 +1096,15 @@ func (r *Reseller) SetAssignedUserManagerProfiles(resellerID uint, profileNames 
 }
 
 // GetAssignedUserManagerProfiles returns the profile names a reseller is
-// allowed to use.
-func (r *Reseller) GetAssignedUserManagerProfiles(resellerID uint) ([]string, error) {
+// allowed to use on the given server.
+func (r *Reseller) GetAssignedUserManagerProfiles(resellerID uint, reqServerID *uint) ([]string, error) {
+	serverID, err := resolveServerID(r.db, reqServerID)
+	if err != nil {
+		return nil, err
+	}
+
 	var links []model.ResellerUserManagerProfile
-	if err := r.db.Where("reseller_id = ?", resellerID).Find(&links).Error; err != nil {
+	if err := r.db.Where("reseller_id = ? AND server_id = ?", resellerID, serverID).Find(&links).Error; err != nil {
 		return nil, err
 	}
 
@@ -1059,11 +1115,12 @@ func (r *Reseller) GetAssignedUserManagerProfiles(resellerID uint) ([]string, er
 	return names, nil
 }
 
-// IsUserManagerProfileAssigned checks whether a reseller may use the given profile.
-func (r *Reseller) IsUserManagerProfileAssigned(resellerID uint, profileName string) (bool, error) {
+// IsUserManagerProfileAssigned checks whether a reseller may use the given
+// profile on the given server.
+func (r *Reseller) IsUserManagerProfileAssigned(resellerID, serverID uint, profileName string) (bool, error) {
 	var count int64
 	if err := r.db.Model(&model.ResellerUserManagerProfile{}).
-		Where("reseller_id = ? AND profile_name = ?", resellerID, profileName).
+		Where("reseller_id = ? AND server_id = ? AND profile_name = ?", resellerID, serverID, profileName).
 		Count(&count).Error; err != nil {
 		return false, err
 	}

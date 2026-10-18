@@ -683,7 +683,10 @@ export default function Dashboard() {
                 {isDeviceDataLoading ? (
                   <DeviceStatsSkeleton type='resource' />
                 ) : (
-                  <DeviceResource stats={deviceData?.DeviceInfo} />
+                  <DeviceResource
+                    stats={deviceData?.DeviceInfo}
+                    serverName={deviceData?.device_server_name}
+                  />
                 )}
               </CardErrorBoundary>
 

@@ -36,7 +36,19 @@ func NewResourceSampler(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor) *Resourc
 // erroring, matching every other job's own "one dead connection never
 // crashes the process" convention.
 func (s *ResourceSampler) Sample() {
-	info, err := s.mikrotikAdaptor.FetchDeviceInfo(context.Background())
+	// model.ResourceSample has no ServerID -- it was built, and remains,
+	// a single-router CPU/memory history (see its own doc comment), same
+	// implicit scope as DeviceData's device-level widgets. Resolving "the"
+	// server explicitly here (lowest ID) names that existing assumption
+	// rather than changing it; see DeviceData.resolveDefaultServerID's own
+	// doc comment for the identical reasoning.
+	var server model.Server
+	if err := s.db.First(&server).Error; err != nil {
+		s.logger.Warn("failed to resolve a server for resource sampling", zap.Error(err))
+		return
+	}
+
+	info, err := s.mikrotikAdaptor.ForServer(server.ID).FetchDeviceInfo(context.Background())
 	if err != nil {
 		s.logger.Warn("failed to fetch device info for resource sample", zap.Error(err))
 		return

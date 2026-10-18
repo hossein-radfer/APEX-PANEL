@@ -447,7 +447,7 @@ func (c *ResellerController) GetAssignedUserManagerGroups(ctx echo.Context) erro
 		return ctx.JSON(http.StatusForbidden, schema.ErrorResponse{StatusCode: http.StatusForbidden, Status: "error", Message: "forbidden"})
 	}
 
-	names, err := c.resellerService.GetAssignedUserManagerGroups(uint(nid))
+	names, err := c.resellerService.GetAssignedUserManagerGroups(uint(nid), parseOptionalServerIDParam(ctx))
 	if err != nil {
 		c.logger.Error("failed to get assigned user manager groups", zap.Uint("id", uint(nid)), zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
@@ -481,7 +481,7 @@ func (c *ResellerController) SetAssignedUserManagerGroups(ctx echo.Context) erro
 		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
 	}
 
-	if err := c.resellerService.SetAssignedUserManagerGroups(uint(nid), req.GroupNames); err != nil {
+	if err := c.resellerService.SetAssignedUserManagerGroups(uint(nid), req.ServerID, req.GroupNames); err != nil {
 		c.logger.Error("failed to set assigned user manager groups", zap.Uint("id", uint(nid)), zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{
 			StatusCode: http.StatusInternalServerError,
@@ -510,7 +510,7 @@ func (c *ResellerController) GetAssignedUserManagerProfiles(ctx echo.Context) er
 		return ctx.JSON(http.StatusForbidden, schema.ErrorResponse{StatusCode: http.StatusForbidden, Status: "error", Message: "forbidden"})
 	}
 
-	names, err := c.resellerService.GetAssignedUserManagerProfiles(uint(nid))
+	names, err := c.resellerService.GetAssignedUserManagerProfiles(uint(nid), parseOptionalServerIDParam(ctx))
 	if err != nil {
 		c.logger.Error("failed to get assigned user manager profiles", zap.Uint("id", uint(nid)), zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
@@ -544,7 +544,7 @@ func (c *ResellerController) SetAssignedUserManagerProfiles(ctx echo.Context) er
 		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
 	}
 
-	if err := c.resellerService.SetAssignedUserManagerProfiles(uint(nid), req.ProfileNames); err != nil {
+	if err := c.resellerService.SetAssignedUserManagerProfiles(uint(nid), req.ServerID, req.ProfileNames); err != nil {
 		c.logger.Error("failed to set assigned user manager profiles", zap.Uint("id", uint(nid)), zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{
 			StatusCode: http.StatusInternalServerError,

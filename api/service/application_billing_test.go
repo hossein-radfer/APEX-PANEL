@@ -46,13 +46,22 @@ func (f *fakeWgPeerRouterOS) server() *httptest.Server {
 // actually complete its peer-disable side effect against a real (faked)
 // RouterOS endpoint, rather than newTestApplicationServiceForBilling's own
 // peers:nil shortcut.
+// testWgPeerFakeRouterServerID is the server ID this test registers its
+// fake router's client under -- MwpClients is keyed by server ID (see its
+// own doc comment), so any model.Peer row a test using this helper creates
+// must set ServerID to this same constant for its ForServer(peer.ServerID)
+// call to resolve to the fake router instead of "no client configured".
+// Zero -- model.Peer.ServerID's own Go zero value -- so tests that don't
+// explicitly set ServerID on their seeded peer still resolve correctly.
+const testWgPeerFakeRouterServerID = uint(0)
+
 func newTestWgPeerServiceWithFakeRouter(t *testing.T, db *gorm.DB, srv *httptest.Server) *WgPeer {
 	t.Helper()
 	mwpClients := common.NewMwpClients(db)
 	isSSL := false
 	addr := srv.Listener.Addr().String()
 	host, port := addr[:len(addr)-len(":")-len(portOf(addr))], portOf(addr)
-	mwpClients.SetClient(&schema.CreateServerRequest{
+	mwpClients.SetClient(testWgPeerFakeRouterServerID, &schema.CreateServerRequest{
 		Name:      "test-server",
 		IPAddress: host,
 		APIPort:   port,

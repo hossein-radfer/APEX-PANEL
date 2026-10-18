@@ -9,6 +9,8 @@ export const TunnelHealthSeverityEnum = z.enum([
 
 export const TunnelHealthStatusSchema = z.object({
   id: z.number(),
+  server_id: z.number(),
+  server_name: z.string().optional(),
   interface_name: z.string(),
   interface_type: z.string().optional(),
   severity: TunnelHealthSeverityEnum,
@@ -25,6 +27,8 @@ export type TunnelHealthStatus = z.infer<typeof TunnelHealthStatusSchema>
 
 export const TunnelHealthEventSchema = z.object({
   id: z.number(),
+  server_id: z.number(),
+  server_name: z.string().optional(),
   interface_name: z.string(),
   from_status: TunnelHealthSeverityEnum,
   to_status: TunnelHealthSeverityEnum,
@@ -39,6 +43,8 @@ export type TunnelHealthEvent = z.infer<typeof TunnelHealthEventSchema>
 
 export const TunnelActionLogSchema = z.object({
   id: z.number(),
+  server_id: z.number(),
+  server_name: z.string().optional(),
   interface_name: z.string(),
   level: z.string(),
   command_description: z.string(),
@@ -63,6 +69,8 @@ export type TunnelHealthScorePoint = z.infer<typeof TunnelHealthScoreSchema>
 
 export const TunnelIncidentDiagnosisSchema = z.object({
   id: z.number(),
+  server_id: z.number(),
+  server_name: z.string().optional(),
   interface_name: z.string(),
   cause: z.enum([
     'remote_unreachable',
@@ -82,6 +90,8 @@ export type TunnelIncidentDiagnosis = z.infer<
 
 export const TunnelBackupProbeResultSchema = z.object({
   id: z.number(),
+  server_id: z.number(),
+  server_name: z.string().optional(),
   interface_name: z.string(),
   backup_gateway_ip: z.string(),
   reachable: z.boolean(),
@@ -136,6 +146,8 @@ export const TunnelPolicyAntiFlappingSchema = z.object({
 })
 export const TunnelPolicySchema = z.object({
   id: z.number(),
+  server_id: z.number(),
+  server_name: z.string().optional(),
   interface_name: z.string(),
   detection: TunnelPolicyDetectionSchema,
   level1: TunnelPolicyLevel1Schema,

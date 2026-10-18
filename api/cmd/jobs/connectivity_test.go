@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/maahdima/mwp/api/adaptor/mikrotik"
+	"github.com/maahdima/mwp/api/dataservice/model"
 )
 
 // unreachableAdaptor simulates a Mikrotik connection that always fails, for
@@ -16,6 +17,13 @@ type unreachableAdaptor struct {
 
 func (u *unreachableAdaptor) FetchWgPeers(ctx context.Context) ([]mikrotik.WireGuardPeer, error) {
 	return nil, errors.New("connection refused")
+}
+
+// ForServer overrides fakeAdaptor's own embedded ForServer so it returns
+// THIS unreachableAdaptor (preserving the FetchWgPeers override above),
+// not the embedded fakeAdaptor's reachable behavior.
+func (u *unreachableAdaptor) ForServer(serverID uint) MikrotikAdaptor {
+	return u
 }
 
 // spyCriticalAlertNotifier records every NotifyCriticalAlert call so tests
@@ -30,6 +38,12 @@ func (s *spyCriticalAlertNotifier) NotifyCriticalAlert(message string) {
 
 func TestCheckConnectivity_AlertsOnceOnOutageTransition(t *testing.T) {
 	db := openTestDB(t)
+	// openTestDB shares one literal in-memory SQLite DB across every test in
+	// this package -- a unique server Name per test avoids the real
+	// uniqueIndex on servers.name colliding across tests.
+	if err := db.Create(&model.Server{Name: "test-server-outage-transition", IPAddress: "10.255.0.1", IsActive: true}).Error; err != nil {
+		t.Fatalf("failed to seed server: %v", err)
+	}
 	calc := NewTrafficCalculator(db, &unreachableAdaptor{}, nil)
 	spy := &spyCriticalAlertNotifier{}
 	calc.SetCriticalAlertNotifier(spy)
@@ -52,6 +66,9 @@ func TestCheckConnectivity_AlertsOnceOnOutageTransition(t *testing.T) {
 
 func TestCheckConnectivity_AlertsOnRecovery(t *testing.T) {
 	db := openTestDB(t)
+	if err := db.Create(&model.Server{Name: "test-server-recovery", IPAddress: "10.255.0.2", IsActive: true}).Error; err != nil {
+		t.Fatalf("failed to seed server: %v", err)
+	}
 	calc := NewTrafficCalculator(db, &unreachableAdaptor{}, nil)
 	spy := &spyCriticalAlertNotifier{}
 	calc.SetCriticalAlertNotifier(spy)
@@ -78,6 +95,9 @@ func TestCheckConnectivity_AlertsOnRecovery(t *testing.T) {
 
 func TestCheckConnectivity_NoOpWithoutNotifier(t *testing.T) {
 	db := openTestDB(t)
+	if err := db.Create(&model.Server{Name: "test-server-noop", IPAddress: "10.255.0.3", IsActive: true}).Error; err != nil {
+		t.Fatalf("failed to seed server: %v", err)
+	}
 	calc := NewTrafficCalculator(db, &unreachableAdaptor{}, nil)
 	// No SetCriticalAlertNotifier call -- must not panic.
 	calc.checkConnectivity()

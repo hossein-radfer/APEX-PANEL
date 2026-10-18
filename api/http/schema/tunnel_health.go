@@ -2,6 +2,8 @@ package schema
 
 type TunnelHealthStatusResponse struct {
 	Id                               uint   `json:"id"`
+	ServerID                         uint   `json:"server_id"`
+	ServerName                       string `json:"server_name"`
 	InterfaceName                    string `json:"interface_name"`
 	InterfaceType                    string `json:"interface_type,omitempty"`
 	Severity                         string `json:"severity"`
@@ -14,6 +16,8 @@ type TunnelHealthStatusResponse struct {
 
 type TunnelHealthEventResponse struct {
 	Id            uint    `json:"id"`
+	ServerID      uint    `json:"server_id"`
+	ServerName    string  `json:"server_name"`
 	InterfaceName string  `json:"interface_name"`
 	FromStatus    string  `json:"from_status"`
 	ToStatus      string  `json:"to_status"`
@@ -24,6 +28,8 @@ type TunnelHealthEventResponse struct {
 
 type TunnelActionLogResponse struct {
 	Id                 uint   `json:"id"`
+	ServerID           uint   `json:"server_id"`
+	ServerName         string `json:"server_name"`
 	InterfaceName      string `json:"interface_name"`
 	Level              string `json:"level"`
 	CommandDescription string `json:"command_description"`
@@ -44,6 +50,8 @@ type TunnelHealthScoreResponse struct {
 // root-cause guess (see TunnelHealthService.diagnoseIncidentOnce).
 type TunnelIncidentDiagnosisResponse struct {
 	Id            uint   `json:"id"`
+	ServerID      uint   `json:"server_id"`
+	ServerName    string `json:"server_name"`
 	InterfaceName string `json:"interface_name"`
 	Cause         string `json:"cause"`
 	Evidence      string `json:"evidence"`
@@ -54,6 +62,8 @@ type TunnelIncidentDiagnosisResponse struct {
 // a tunnel's own configured Level 2 backup gateway.
 type TunnelBackupProbeResultResponse struct {
 	Id              uint   `json:"id"`
+	ServerID        uint   `json:"server_id"`
+	ServerName      string `json:"server_name"`
 	InterfaceName   string `json:"interface_name"`
 	BackupGatewayIP string `json:"backup_gateway_ip"`
 	Reachable       bool   `json:"reachable"`
@@ -116,6 +126,8 @@ type TunnelPolicyAntiFlappingResponse struct {
 
 type TunnelPolicyResponse struct {
 	Id            uint                             `json:"id"`
+	ServerID      uint                             `json:"server_id"`
+	ServerName    string                           `json:"server_name"`
 	InterfaceName string                           `json:"interface_name"`
 	Detection     TunnelPolicyDetectionResponse    `json:"detection"`
 	Level1        TunnelPolicyLevel1Response       `json:"level1"`

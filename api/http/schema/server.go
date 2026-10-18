@@ -22,6 +22,7 @@ type UpdateServerRequest struct {
 	Name      *string `json:"name,omitempty"`
 	IPAddress *string `json:"ip_address,omitempty"`
 	APIPort   *string `json:"api_port,omitempty"`
+	IsSSL     *bool   `json:"is_ssl,omitempty"`
 	Username  *string `json:"username,omitempty"`
 	Password  *string `json:"password,omitempty"`
 	IsActive  *bool   `json:"is_active,omitempty"`
@@ -33,6 +34,7 @@ type ServerResponse struct {
 	Name      string       `json:"name"`
 	IPAddress string       `json:"ip_address"`
 	APIPort   string       `json:"api_port"`
+	IsSSL     bool         `json:"is_ssl"`
 	IsActive  bool         `json:"is_active"`
 	Status    ServerStatus `json:"status"`
 }

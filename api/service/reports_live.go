@@ -42,22 +42,28 @@ func NewReportsLiveService(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor) *Repo
 func (s *ReportsLiveService) GetOnlineUsers() (*schema.ReportsOnlineUsersResponse, error) {
 	users := make([]schema.ReportsOnlineUser, 0)
 
-	if sessions, err := s.mikrotikAdaptor.FetchPPPActiveSessions(context.Background()); err != nil {
-		s.logger.Warn("failed to fetch ppp active sessions for online users report", zap.Error(err))
-	} else {
-		// A confirmed, reported gap: unlike the WireGuard and V2Ray branches
-		// below (each of which joins back to its own DB table for a
-		// user-facing "location"), this branch never looked up the matching
-		// UserManagerAccount row at all, so Location was always "" (rendered
-		// as "—" by the frontend). Group is the closest UserManager
-		// equivalent of "location" this codebase has -- mirrors the exact
-		// same "load once, map by username" pattern the WireGuard branch
-		// below already uses for Peer.Interface.
-		var accounts []model.UserManagerAccount
-		s.db.Find(&accounts)
-		groupByUsername := make(map[string]string, len(accounts))
-		for _, a := range accounts {
-			groupByUsername[a.Username] = a.Group
+	var servers []model.Server
+	s.db.Find(&servers)
+
+	// A confirmed, reported gap: unlike the WireGuard and V2Ray branches
+	// below (each of which joins back to its own DB table for a
+	// user-facing "location"), this branch never looked up the matching
+	// UserManagerAccount row at all, so Location was always "" (rendered
+	// as "—" by the frontend). Group is the closest UserManager
+	// equivalent of "location" this codebase has -- mirrors the exact
+	// same "load once, map by username" pattern the WireGuard branch
+	// below already uses for Peer.Interface.
+	var accounts []model.UserManagerAccount
+	s.db.Find(&accounts)
+	groupByUsername := make(map[string]string, len(accounts))
+	for _, a := range accounts {
+		groupByUsername[a.Username] = a.Group
+	}
+	for _, server := range servers {
+		sessions, err := s.mikrotikAdaptor.ForServer(server.ID).FetchPPPActiveSessions(context.Background())
+		if err != nil {
+			s.logger.Warn("failed to fetch ppp active sessions for online users report", zap.Uint("server_id", server.ID), zap.Error(err))
+			continue
 		}
 		for _, session := range sessions {
 			users = append(users, schema.ReportsOnlineUser{
@@ -68,38 +74,48 @@ func (s *ReportsLiveService) GetOnlineUsers() (*schema.ReportsOnlineUsersRespons
 		}
 	}
 
-	var wgPeers []mikrotik.WireGuardPeer
 	wgOnlineCount := 0
-	if peers, err := s.mikrotikAdaptor.FetchWgPeers(context.Background()); err != nil {
-		s.logger.Warn("failed to fetch wireguard peers for online users report", zap.Error(err))
-	} else {
-		wgPeers = peers
+	{
 		var dbPeers []model.Peer
 		s.db.Find(&dbPeers)
 		type peerInfo struct {
-			name        string
-			ifaceName   string
+			name      string
+			ifaceName string
 		}
-		peerInfoByID := make(map[string]peerInfo, len(dbPeers))
+		// Keyed by (ServerID, PeerID) together -- RouterOS's own peer ".id"
+		// is only unique within one router, not across every registered
+		// server. See WgPeer.GetPeers' own doc comment on the same issue.
+		type serverPeerKey struct {
+			serverID uint
+			peerID   string
+		}
+		peerInfoByKey := make(map[serverPeerKey]peerInfo, len(dbPeers))
 		for _, p := range dbPeers {
-			peerInfoByID[p.PeerID] = peerInfo{name: p.Name, ifaceName: p.Interface}
+			peerInfoByKey[serverPeerKey{serverID: p.ServerID, peerID: p.PeerID}] = peerInfo{name: p.Name, ifaceName: p.Interface}
 		}
-		for _, wgPeer := range wgPeers {
-			isOnline := isWgPeerOnline(wgPeer)
-			if !isOnline {
+		for _, server := range servers {
+			wgPeers, err := s.mikrotikAdaptor.ForServer(server.ID).FetchWgPeers(context.Background())
+			if err != nil {
+				s.logger.Warn("failed to fetch wireguard peers for online users report", zap.Uint("server_id", server.ID), zap.Error(err))
 				continue
 			}
-			wgOnlineCount++
-			info := peerInfoByID[wgPeer.ID]
-			name := info.name
-			if name == "" {
-				name = wgPeer.ID
+			for _, wgPeer := range wgPeers {
+				isOnline := isWgPeerOnline(wgPeer)
+				if !isOnline {
+					continue
+				}
+				wgOnlineCount++
+				info := peerInfoByKey[serverPeerKey{serverID: server.ID, peerID: wgPeer.ID}]
+				name := info.name
+				if name == "" {
+					name = wgPeer.ID
+				}
+				users = append(users, schema.ReportsOnlineUser{
+					Name:     name,
+					Protocol: model.UsageProtocolWireGuard,
+					Location: info.ifaceName,
+				})
 			}
-			users = append(users, schema.ReportsOnlineUser{
-				Name:     name,
-				Protocol: model.UsageProtocolWireGuard,
-				Location: info.ifaceName,
-			})
 		}
 	}
 

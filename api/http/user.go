@@ -213,7 +213,7 @@ func (u *UserController) getUserManagerProtocolFile(ctx echo.Context, kind servi
 		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
 	}
 
-	protocol, err := u.userManagerService.EnsureProtocolForSharedAccount(uuid, requestedProtocol)
+	protocol, serverID, err := u.userManagerService.EnsureProtocolForSharedAccount(uuid, requestedProtocol)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, common.ErrUserManagerAccountNotShared) {
 			return ctx.JSON(http.StatusNotFound, schema.ErrorResponse{
@@ -225,7 +225,7 @@ func (u *UserController) getUserManagerProtocolFile(ctx echo.Context, kind servi
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
-	path, err := u.userManagerProtocolFile.GetPublicFilePath(protocol, kind)
+	path, err := u.userManagerProtocolFile.GetPublicFilePath(protocol, serverID, kind)
 	if err != nil {
 		return ctx.JSON(http.StatusNotFound, schema.ErrorResponse{
 			StatusCode: http.StatusNotFound,

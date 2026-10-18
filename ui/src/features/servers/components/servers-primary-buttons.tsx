@@ -5,13 +5,11 @@ import { ServerConnectionHealthButton } from '@/features/servers/components/serv
 import { useServers } from '@/features/servers/context/servers-context.tsx'
 
 interface Props {
-  serversLength: number
   refetchServersList: () => void
   isServersListRefetching: boolean
 }
 
 export function ServersPrimaryButtons({
-  serversLength,
   refetchServersList,
   isServersListRefetching,
 }: Props) {
@@ -35,7 +33,6 @@ export function ServersPrimaryButtons({
       </Button>
       <Button
         className='space-x-1'
-        disabled={serversLength === 1}
         onClick={() => setOpen('add')}
       >
         <span>افزودن سرور</span> <IconCloudPlus size={18} />

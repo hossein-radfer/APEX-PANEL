@@ -6,11 +6,12 @@ import {
   setResellerBillingPrices,
   fetchResellerBillingTiers,
   setResellerBillingTiers,
+  fetchAssignedUserManagerGroups,
 } from '@/api/resellers.ts'
 import { useResellersListQuery } from '@/hooks/resellers/useResellersListQuery.ts'
 import { useAssignedInterfacesQuery } from '@/hooks/resellers/useAssignedInterfacesQuery.ts'
-import { useAssignedUserManagerGroupsQuery } from '@/hooks/resellers/useAssignedUserManagerGroupsQuery.ts'
 import { useInterfacesListQuery } from '@/hooks/interfaces/useInterfacesListQuery.ts'
+import { useServersListQuery } from '@/hooks/servers/useServersListQuery.ts'
 import { fetchAssignedXuiPanelSummaries } from '@/api/v2ray.ts'
 import { useAuthStore } from '@/stores/authStore.ts'
 import { Header } from '@/components/layout/header'
@@ -95,25 +96,58 @@ export default function ResellerBillingPricesPage() {
     resellerID ?? undefined
   )
   const { data: interfacesList = [] } = useInterfacesListQuery(!!resellerID)
-  const { data: assignedUmGroups = [] } = useAssignedUserManagerGroupsQuery(
-    resellerID ?? undefined
-  )
   const { data: assignedPanels = [] } = useQuery({
     queryKey: ['reseller_assigned_xui_panel_summaries', resellerID],
     queryFn: () => fetchAssignedXuiPanelSummaries(resellerID!),
     enabled: !!resellerID,
   })
 
+  // Needed to build the server-scoped WIREGUARD/USER_MANAGER location keys
+  // below -- see wireGuardBillingLocationKey/userManagerBillingLocationKey
+  // on the Go side (cmd/jobs/traffic.go) for why ChargeUsage now looks
+  // these up as "<serverID>:<name>" rather than the bare name alone (an
+  // interface/group name is only unique PER SERVER, not panel-wide).
+  const { data: serversList = [] } = useServersListQuery(!!resellerID)
+
+  // A reseller's assigned User Manager groups are granted per-server (see
+  // ResellerUserManagerGroup.ServerID's own doc comment), so unlike
+  // interfaces (which carry server_id directly in one list), groups are
+  // fetched once per registered server and merged, each tagged with the
+  // server it came from.
+  const assignedUmGroupsQueries = useQuery({
+    queryKey: ['reseller_assigned_user_manager_groups_all_servers', resellerID, serversList.map((s) => s.id)],
+    queryFn: async () => {
+      const perServer = await Promise.all(
+        serversList.map(async (server) => ({
+          server,
+          groups: await fetchAssignedUserManagerGroups(resellerID!, server.id),
+        }))
+      )
+      return perServer.flatMap(({ server, groups }) =>
+        (groups ?? []).map((group) => ({ serverId: server.id, group }))
+      )
+    },
+    enabled: !!resellerID && serversList.length > 0,
+  })
+  const assignedUmGroups = useMemo(
+    () => assignedUmGroupsQueries.data ?? [],
+    [assignedUmGroupsQueries.data]
+  )
+
   const locationOptions: Record<string, LocationOption[]> = useMemo(() => {
     const wireguard = (assignedInterfaceIds || [])
       .map((interfaceId) => {
         const iface = (interfacesList || [])?.find((i) => i.id === interfaceId)
-        return iface ? { key: iface.name, label: iface.name } : null
+        if (!iface) return null
+        return {
+          key: `${iface.server_id}:${iface.name}`,
+          label: iface.name,
+        }
       })
       .filter((option): option is LocationOption => option !== null)
 
-    const userManager = (assignedUmGroups || []).map((group) => ({
-      key: group,
+    const userManager = assignedUmGroups.map(({ serverId, group }) => ({
+      key: `${serverId}:${group}`,
       label: group,
     }))
 

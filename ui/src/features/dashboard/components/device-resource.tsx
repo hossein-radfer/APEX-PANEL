@@ -6,9 +6,10 @@ import { StatusPulseDot } from '@/features/dashboard/components/status-pulse-dot
 
 interface Props {
   stats: DeviceData['DeviceInfo'] | undefined
+  serverName?: string
 }
 
-export default function DeviceResource({ stats }: Props) {
+export default function DeviceResource({ stats, serverName }: Props) {
   const gauges = buildDeviceResourceGauges(stats)
   // Confirmed, reported bug: stats is now also `null` (not just
   // `undefined`) whenever GetDeviceData's own getDeviceInfo call failed
@@ -21,9 +22,16 @@ export default function DeviceResource({ stats }: Props) {
     <Card className='col-span-1 lg:col-span-2'>
       <CardContent>
         <div className='mb-5 flex items-center justify-between'>
-          <h2 className='text-foreground text-lg font-semibold'>
-            آمار سخت‌افزاری
-          </h2>
+          <div className='flex items-center gap-2'>
+            <h2 className='text-foreground text-lg font-semibold'>
+              آمار سخت‌افزاری
+            </h2>
+            {serverName && (
+              <span className='text-muted-foreground text-xs'>
+                {serverName}
+              </span>
+            )}
+          </div>
           <div className='flex items-center gap-2'>
             <StatusPulseDot active={isUp} />
             <span className='text-muted-foreground text-sm'>

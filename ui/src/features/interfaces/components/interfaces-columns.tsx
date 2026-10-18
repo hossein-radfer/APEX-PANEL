@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/switch.tsx'
 import LongText from '@/components/long-text'
 import { InterfacesTableRowActions } from '@/features/interfaces/components/interfaces-table-row-actions.tsx'
 import { ColoredBadge } from '@/features/shared-components/status-badge.tsx'
+import { ServerBadge } from '@/features/shared-components/server-badge.tsx'
 import { DataTableColumnHeader } from '@/features/shared-components/table/data-table-column-header.tsx'
 
 export const interfacesColumns: ColumnDef<Interface>[] = [
@@ -48,9 +49,23 @@ export const interfacesColumns: ColumnDef<Interface>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='نام' />
     ),
-    cell: ({ row }) => {
-      const { name } = row.original
-      return <div className='w-fit text-nowrap'>{name}</div>
+    cell: ({ row, table }) => {
+      const { name, server_id, server_name } = row.original
+      // The server badge is only shown once the loaded rows actually span
+      // more than one server -- in the common single-server case (today's
+      // only real deployment) it would be pure visual noise, matching
+      // InterfaceSelect's own identical convention.
+      const allRows = table.getCoreRowModel().rows.map((r) => r.original)
+      const showServerBadge =
+        new Set(allRows.map((r) => r.server_id)).size > 1
+      return (
+        <div className='flex w-fit flex-col gap-0.5 text-nowrap'>
+          <span>{name}</span>
+          {showServerBadge && (
+            <ServerBadge serverId={server_id} serverName={server_name} />
+          )}
+        </div>
+      )
     },
     meta: {
       className: cn('border-l border-r'),

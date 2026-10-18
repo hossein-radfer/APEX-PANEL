@@ -28,6 +28,12 @@ func newPerUserAdaptor() *perUserAdaptor {
 	return &perUserAdaptor{results: make(map[string]mikrotik.UserManagerMonitorResult)}
 }
 
+// ForServer satisfies MikrotikAdaptorFactory -- this fake is single-server
+// only, matching fakeAdaptor's own identical ForServer (traffic_e2e_test.go).
+func (f *perUserAdaptor) ForServer(serverID uint) MikrotikAdaptor {
+	return f
+}
+
 func (f *perUserAdaptor) set(userID string, downloadBytes, uploadBytes int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

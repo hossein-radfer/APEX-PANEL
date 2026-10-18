@@ -3,6 +3,8 @@ import { createApiResponseSchema } from '@/schema/api-response.ts'
 
 export const SyncInterfacePreviewSchema = z.object({
   id: z.string(),
+  server_id: z.number(),
+  server_name: z.string(),
   disabled: z.boolean(),
   comment: z.string().nullable(),
   name: z.string(),
@@ -13,6 +15,8 @@ export const SyncInterfacePreviewSchema = z.object({
 
 export const SyncPeerPreviewSchema = z.object({
   id: z.string(),
+  server_id: z.number(),
+  server_name: z.string(),
   disabled: z.boolean(),
   comment: z.string().nullable(),
   name: z.string(),
@@ -29,10 +33,12 @@ export const SyncPeersResponseSchema = createApiResponseSchema(
 )
 
 export const SyncInterfacesRequestSchema = z.object({
+  server_id: z.number(),
   interface_ids: z.array(z.string()),
 })
 
 export const SyncPeersRequestSchema = z.object({
+  server_id: z.number(),
   peer_ids: z.array(z.string()),
 })
 

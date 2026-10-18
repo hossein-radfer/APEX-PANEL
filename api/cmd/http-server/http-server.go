@@ -64,7 +64,8 @@ func StartHttpServer(
 	peerService := service.NewWGPeer(db, mikrotikAdaptor, schedulerService, queueService, configGenerator, qrCodeGenerator, auditLogService)
 	peerService.SetBotNotifier(botNotifier)
 	deviceDataService := service.NewDeviceData(db, mikrotikAdaptor, serverService, interfaceService, peerService)
-	syncService := service.NewSyncService(db, mikrotikAdaptor, configGenerator, qrCodeGenerator)
+	syncServiceFactory := service.NewSyncServiceFactory(db, mikrotikAdaptor, configGenerator, qrCodeGenerator)
+	syncController := http.NewSyncController(db, syncServiceFactory)
 	resellerService := service.NewReseller(db, mikrotikAdaptor)
 	resellerService.SetBotNotifier(botNotifier)
 	walletService := service.NewWallet(db)
@@ -336,7 +337,7 @@ func StartHttpServer(
 		excelGenerator,
 		deviceDataService,
 		trafficCalculator,
-		syncService,
+		syncController,
 		resellerService,
 		walletService,
 		pricePlanService,

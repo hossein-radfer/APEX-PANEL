@@ -226,11 +226,16 @@ type AssignResellerInterfacesRequest struct {
 // mirror AssignResellerInterfacesRequest exactly (including the deliberate
 // absence of "required" -- see that struct's doc comment), restricting
 // which RouterOS User Manager groups/profiles a reseller may assign when
-// creating accounts.
+// creating accounts. ServerID picks which server this grant applies to --
+// optional, falls back to this install's one server (see
+// service.resolveServerID), since a group/profile name is only unique per
+// server.
 type AssignResellerUserManagerGroupsRequest struct {
+	ServerID   *uint    `json:"server_id,omitempty"`
 	GroupNames []string `json:"groupNames"`
 }
 
 type AssignResellerUserManagerProfilesRequest struct {
+	ServerID     *uint    `json:"server_id,omitempty"`
 	ProfileNames []string `json:"profileNames"`
 }

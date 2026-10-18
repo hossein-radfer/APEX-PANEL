@@ -12,11 +12,17 @@ import (
 	"github.com/maahdima/mwp/api/http/schema"
 )
 
-// newTestAdaptorWithFakeRouter builds an *Adaptor whose "test-server" named
-// client points at a local httptest server -- mirrors how a real
-// model.Server row/common.MwpClients.SetClient pairing works in
+// testServerID is an arbitrary fixed ID used to register the fake router's
+// client in these tests -- MwpClients is keyed by server ID, not name (see
+// MwpClients.SetClient's own doc comment), so every test here registers and
+// looks up by this same constant.
+const testServerID = uint(1)
+
+// newTestAdaptorWithFakeRouter builds a *ServerAdaptor (scoped to
+// testServerID) whose client points at a local httptest server -- mirrors
+// how a real model.Server row/common.MwpClients.SetClient pairing works in
 // production, just without a real router or database.
-func newTestAdaptorWithFakeRouter(t *testing.T, handler http.HandlerFunc) (*Adaptor, string) {
+func newTestAdaptorWithFakeRouter(t *testing.T, handler http.HandlerFunc) *ServerAdaptor {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -32,7 +38,7 @@ func newTestAdaptorWithFakeRouter(t *testing.T, handler http.HandlerFunc) (*Adap
 
 	mwpClients := common.NewMwpClients(nil)
 	isSSL := false
-	mwpClients.SetClient(&schema.CreateServerRequest{
+	mwpClients.SetClient(testServerID, &schema.CreateServerRequest{
 		Name:      "test-server",
 		IPAddress: "127.0.0.1",
 		APIPort:   portStr,
@@ -41,11 +47,11 @@ func newTestAdaptorWithFakeRouter(t *testing.T, handler http.HandlerFunc) (*Adap
 		Password:  "admin",
 	})
 
-	return NewAdaptor(mwpClients), "test-server"
+	return NewAdaptor(mwpClients).ForServer(testServerID)
 }
 
 func TestFetchAllContainers_ReturnsListFromRouter(t *testing.T) {
-	adaptor, serverName := newTestAdaptorWithFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
+	adaptor := newTestAdaptorWithFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/rest/container" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -57,7 +63,7 @@ func TestFetchAllContainers_ReturnsListFromRouter(t *testing.T) {
 		})
 	})
 
-	containers, err := adaptor.FetchAllContainers(t.Context(), serverName)
+	containers, err := adaptor.FetchAllContainers(t.Context())
 	if err != nil {
 		t.Fatalf("FetchAllContainers failed: %v", err)
 	}
@@ -73,7 +79,7 @@ func TestFetchAllContainers_ReturnsListFromRouter(t *testing.T) {
 }
 
 func TestFetchContainerByName_FindsMatchingContainer(t *testing.T) {
-	adaptor, serverName := newTestAdaptorWithFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
+	adaptor := newTestAdaptorWithFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]Container{
 			{ID: "*1", Name: "xui-panel-1", Status: "running"},
@@ -81,7 +87,7 @@ func TestFetchContainerByName_FindsMatchingContainer(t *testing.T) {
 		})
 	})
 
-	container, err := adaptor.FetchContainerByName(t.Context(), serverName, "xui-panel-2")
+	container, err := adaptor.FetchContainerByName(t.Context(), "xui-panel-2")
 	if err != nil {
 		t.Fatalf("FetchContainerByName failed: %v", err)
 	}
@@ -91,14 +97,14 @@ func TestFetchContainerByName_FindsMatchingContainer(t *testing.T) {
 }
 
 func TestFetchContainerByName_ReturnsErrorWhenNotFound(t *testing.T) {
-	adaptor, serverName := newTestAdaptorWithFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
+	adaptor := newTestAdaptorWithFakeRouter(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]Container{
 			{ID: "*1", Name: "some-other-container", Status: "running"},
 		})
 	})
 
-	_, err := adaptor.FetchContainerByName(t.Context(), serverName, "xui-panel-missing")
+	_, err := adaptor.FetchContainerByName(t.Context(), "xui-panel-missing")
 	if err == nil {
 		t.Fatal("expected an error for a container name that doesn't exist on the router")
 	}
@@ -106,10 +112,10 @@ func TestFetchContainerByName_ReturnsErrorWhenNotFound(t *testing.T) {
 
 func TestFetchAllContainers_UnknownServerReturnsError(t *testing.T) {
 	mwpClients := common.NewMwpClients(nil)
-	adaptor := NewAdaptor(mwpClients)
+	adaptor := NewAdaptor(mwpClients).ForServer(uint(9999))
 
-	_, err := adaptor.FetchAllContainers(t.Context(), "never-registered")
+	_, err := adaptor.FetchAllContainers(t.Context())
 	if err == nil {
-		t.Fatal("expected an error when no client is registered for the given server name")
+		t.Fatal("expected an error when no client is registered for the given server id")
 	}
 }

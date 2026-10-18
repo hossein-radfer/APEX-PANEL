@@ -531,6 +531,45 @@ func (n *BotNotifier) NotifyQuotaWarning(reseller model.Reseller, percentRemaini
 	}
 }
 
+// NotifyProtocolQuotaWarning mirrors NotifyQuotaWarning above, but for one
+// of the three separate per-protocol quota pools (User Manager, V2Ray,
+// DNS) rather than the reseller's overall WireGuard pool -- each pool is
+// independently enforced (see model.Reseller's own doc comments), so each
+// needs its own low-quota warning naming which product is running out.
+// protocolLabel/usedBytes/quotaBytes are passed in by the caller rather
+// than read off reseller directly, since which fields to read differs per
+// protocol (UserManagerUsedBytes vs V2RayUsedBytes vs DNSUsedBytes, etc).
+func (n *BotNotifier) NotifyProtocolQuotaWarning(reseller model.Reseller, protocolLabel string, usedBytes int64, quotaBytes *int64, percentRemaining int) {
+	settings, err := n.settingsService.GetOrCreate()
+	if err != nil || !settings.NotifyQuotaWarnings {
+		return
+	}
+
+	quotaStr := "نامحدود"
+	if quotaBytes != nil {
+		quotaStr = gbString(*quotaBytes)
+	}
+
+	{
+		text := fmt.Sprintf(
+			"⚠️ <b>هشدار اتمام حجم %s نماینده</b>\n\n👤 نماینده: <b>%s</b>\n📊 مصرف: %s از %s\n🔻 باقیمانده: %%%d\n\n💳 برای شارژ سریع کیف پول این نماینده، روی دکمه زیر بزنید.",
+			esc(protocolLabel), esc(reseller.Name), gbString(usedBytes), quotaStr, percentRemaining,
+		)
+		keyboard := QuickTopUpKeyboard(reseller)
+		n.broadcastToAdminsWithKeyboard(settings, text, &keyboard)
+	}
+
+	if reseller.TelegramChatID != nil {
+		text := fmt.Sprintf(
+			"⚠️ <b>حجم %s شما رو به اتمام است</b>\n\n📊 مصرف: %s از %s\n🔻 باقیمانده: %%%d\n\n📦 در صورت نیاز، می‌توانید از پنل یک بسته ترافیک مازاد خریداری کنید.",
+			esc(protocolLabel), gbString(usedBytes), quotaStr, percentRemaining,
+		)
+		if err := n.bot.SendMessage(*reseller.TelegramChatID, text); err != nil {
+			n.logger.Warn("failed to send reseller protocol quota warning", zap.Uint("reseller_id", reseller.ID), zap.String("protocol", protocolLabel), zap.Error(err))
+		}
+	}
+}
+
 // NotifyPurchaseReceipt confirms a completed traffic-package purchase to
 // both the admin and the purchasing reseller. priceAmount is a whole-Toman
 // integer (this panel bills exclusively in Toman), so it's rendered with

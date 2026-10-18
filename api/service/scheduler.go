@@ -22,7 +22,7 @@ func NewScheduler(mikrotikAdaptor *mikrotik.Adaptor) *Scheduler {
 	}
 }
 
-func (s *Scheduler) createScheduler(peerID, peerName string, expireTime *string) (*string, error) {
+func (s *Scheduler) createScheduler(serverID uint, peerID, peerName string, expireTime *string) (*string, error) {
 	if expireTime == nil {
 		return nil, nil
 	}
@@ -37,7 +37,7 @@ func (s *Scheduler) createScheduler(peerID, peerName string, expireTime *string)
 		OnEvent:   utils.Ptr(common.SchedulerEvent + peerID),
 	}
 
-	createdScheduler, err := s.mikrotikAdaptor.CreateScheduler(context.Background(), scheduler)
+	createdScheduler, err := s.mikrotikAdaptor.ForServer(serverID).CreateScheduler(context.Background(), scheduler)
 	if err != nil {
 		s.logger.Error("failed to create scheduler for wireguard peer", zap.Error(err))
 		return nil, err
@@ -46,12 +46,12 @@ func (s *Scheduler) createScheduler(peerID, peerName string, expireTime *string)
 	return &createdScheduler.ID, nil
 }
 
-func (s *Scheduler) updateScheduler(schedulerID, expireTime *string) error {
+func (s *Scheduler) updateScheduler(serverID uint, schedulerID, expireTime *string) error {
 	scheduler := mikrotik.Scheduler{
 		StartDate: expireTime,
 	}
 
-	_, err := s.mikrotikAdaptor.UpdateScheduler(context.Background(), *schedulerID, scheduler)
+	_, err := s.mikrotikAdaptor.ForServer(serverID).UpdateScheduler(context.Background(), *schedulerID, scheduler)
 	if err != nil {
 		s.logger.Error("failed to update scheduler for wireguard peer", zap.String("schedulerID", *schedulerID), zap.Error(err))
 		return err
@@ -60,12 +60,12 @@ func (s *Scheduler) updateScheduler(schedulerID, expireTime *string) error {
 	return nil
 }
 
-func (s *Scheduler) deleteScheduler(schedulerID *string) error {
+func (s *Scheduler) deleteScheduler(serverID uint, schedulerID *string) error {
 	if schedulerID == nil {
 		return nil
 	}
 
-	err := s.mikrotikAdaptor.DeleteScheduler(context.Background(), *schedulerID)
+	err := s.mikrotikAdaptor.ForServer(serverID).DeleteScheduler(context.Background(), *schedulerID)
 	if err != nil {
 		s.logger.Error("failed to delete scheduler", zap.String("schedulerID", *schedulerID), zap.Error(err))
 		return err

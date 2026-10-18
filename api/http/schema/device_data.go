@@ -17,6 +17,15 @@ type DeviceStatsResponse struct {
 	DeviceInfo        *DeviceInfo
 	DeviceIPv4Address *DeviceIPv4Address
 	DNSConfig         *DNSConfig
+	// DeviceServerID/DeviceServerName name which one physical server
+	// DeviceIdentity/DeviceInfo/DeviceIPv4Address/DNSConfig describe -- see
+	// DeviceData.resolveDefaultServerID's own doc comment for why these
+	// four widgets always describe exactly one router rather than
+	// aggregating. Zero/empty when no server could be resolved (e.g. none
+	// registered yet), matching those four fields' own nil-on-failure
+	// convention.
+	DeviceServerID   uint   `json:"device_server_id,omitempty"`
+	DeviceServerName string `json:"device_server_name,omitempty"`
 }
 
 // TrafficInfo.TotalUsage is the unified figure: WireGuard's cumulative

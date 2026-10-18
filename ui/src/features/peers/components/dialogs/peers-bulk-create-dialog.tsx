@@ -94,15 +94,30 @@ export function PeersBulkCreateDialog({ open, onOpenChange }: Props) {
   ) => {
     const origin = window.location.origin
     const total = peers.length
+    const divider = '='.repeat(40)
+    const header = [
+      divider,
+      'لیست پیرهای ساخته‌شده - وایرگارد',
+      `تعداد: ${total}`,
+      `تاریخ: ${new Date().toLocaleDateString('fa-IR')}`,
+      divider,
+      '',
+    ].join('\n')
     const lines = peers.map((peer, i) => {
       const link = `${origin}/share?shareId=${peer.uuid}`
-      return `اکانت ${i + 1} از ${total}\nنام: ${peer.name}\nلینک ساب 🔗: ${link}`
+      return [
+        `پیر ${i + 1} از ${total}`,
+        '-'.repeat(24),
+        `نام        : ${peer.name}`,
+        `لینک اشتراک: ${link}`,
+      ].join('\n')
     })
-    const blob = new Blob([lines.join('\n\n')], { type: 'text/plain;charset=utf-8' })
+    const content = header + lines.join('\n\n' + divider + '\n\n') + '\n' + divider
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `wireguard-peers-${new Date().toISOString().split('T')[0]}.txt`
+    a.download = `پیرهای-وایرگارد-${new Date().toISOString().split('T')[0]}.txt`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)

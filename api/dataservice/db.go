@@ -164,7 +164,7 @@ func ConnectDB(config config.DBConfig) (db *gorm.DB, err error) {
 // only ever be bumped forward when new, additive model changes are
 // introduced — it is metadata, not a migration trigger, since GORM's
 // AutoMigrate is already safe/additive on its own.
-const CurrentSchemaVersion = "28"
+const CurrentSchemaVersion = "30"
 
 func AutoMigrate(db *gorm.DB) error {
 	if err := dropStaleUserManagerAccountProtocolColumn(db); err != nil {
@@ -185,6 +185,18 @@ func AutoMigrate(db *gorm.DB) error {
 	}
 	if err := backfillFaoximaDomain(db); err != nil {
 		log.Panic("failed to backfill bot_settings.faoxima_domain: ", err)
+		return err
+	}
+	if err := backfillServerIDForSingleServerInstall(db); err != nil {
+		log.Panic("failed to backfill server_id for multi-server support: ", err)
+		return err
+	}
+	if err := backfillBillingLocationKeyWithServerID(db); err != nil {
+		log.Panic("failed to backfill server-scoped location_key for billing prices: ", err)
+		return err
+	}
+	if err := addServerIDToUserManagerProtocolConfig(db); err != nil {
+		log.Panic("failed to add server_id to user_manager_protocol_configs: ", err)
 		return err
 	}
 
@@ -379,6 +391,410 @@ func backfillFaoximaDomain(db *gorm.DB) error {
 		Update("faoxima_domain", previousHardcodedFaoximaDomain).Error
 }
 
+// backfillServerIDForSingleServerInstall is a one-time, idempotent migration
+// for ApexPanel's multi-server WireGuard/UserManager/tunnel-health support.
+// Interface, Peer, UserManagerAccount, ResellerUserManagerGroup/Profile, and
+// the 8 tunnel-health tables all gained a ServerID column (see each model's
+// own doc comment) so a row can record which physical Mikrotik router it
+// belongs to -- a distinction that simply didn't exist before, because this
+// panel only ever supported a single active server.
+//
+// Every one of those columns is `not null`, several are folded into a
+// widened composite unique index (replacing a stale single/double-column
+// index the same way addLocationKeyToBillingPrice above widens
+// idx_reseller_billing_price) -- so, exactly like that function and
+// backfillFaoximaDomain, this must run BEFORE AutoMigrate: it adds each
+// ServerID column itself (nullable is not an option here since GORM/SQLite
+// both still require a value at insert time for a struct field with no
+// pointer type, but the column is populated correctly for every existing
+// row in the same migration pass, before AutoMigrate ever gets a chance to
+// create or enforce the real composite unique indexes), drops each
+// now-stale narrower unique index so AutoMigrate can rebuild it scoped to
+// (ServerID, ...) instead, and backfills every existing row with this
+// install's one real server ID.
+//
+// Deliberately refuses (returns an error, migration aborts) rather than
+// guesses when more than one Server row already exists -- that can only
+// happen if a future version's own server-creation flow ran before this
+// backfill did, which would mean rows created in that window have no
+// reliable single server to attribute existing Interface/Peer/UserManager
+// Account rows to. A fresh install (zero Server rows yet) has nothing to
+// backfill and simply no-ops; GetOrCreate-style server creation always
+// happens after this runs.
+func backfillServerIDForSingleServerInstall(db *gorm.DB) error {
+	// Gated on the stored schema_version being below "29" (this migration's
+	// own version) so the per-row backfill and its "refuse if more than one
+	// server exists" guard both run exactly once, during the 28->29
+	// upgrade, not on every future startup. Without this gate, a server
+	// added normally through the panel AFTER this migration already
+	// succeeded once (the server_id columns are real, already-correct data
+	// at that point, not something left over from before the upgrade)
+	// would make this function see "more than one server" on every
+	// subsequent boot and panic the whole process on startup -- a
+	// confirmed, reported incident: the panel became a permanent crash
+	// loop the moment a second server was added post-upgrade. The ADD
+	// COLUMN step below still runs unconditionally regardless of version
+	// (same as before this gate), since it's a no-op once the column
+	// already exists and must stay safe to call from a fresh install that
+	// has never recorded any schema_version yet.
+	version, err := storedSchemaVersion(db)
+	if err != nil {
+		return err
+	}
+	alreadyMigrated := version >= 29
+
+	migrator := db.Migrator()
+
+	serverIDTables := []interface{}{
+		&model.Interface{},
+		&model.Peer{},
+		&model.UserManagerAccount{},
+		&model.ResellerUserManagerGroup{},
+		&model.ResellerUserManagerProfile{},
+		&model.TunnelHealthStatus{},
+		&model.TunnelPolicy{},
+		&model.TunnelHealthSample{},
+		&model.TunnelHealthEvent{},
+		&model.TunnelHealthScore{},
+		&model.TunnelIncidentDiagnosis{},
+		&model.TunnelBackupProbeResult{},
+		&model.TunnelActionLog{},
+	}
+
+	// The column itself must exist (as plain nullable -- see
+	// addServerIDColumnIfMissing's own doc comment) BEFORE the real
+	// AutoMigrate call below ever runs, regardless of whether there is a
+	// server yet to backfill a real value from: AutoMigrate's own
+	// `ADD COLUMN server_id NOT NULL` (from the `not null` struct tag)
+	// fails outright on SQLite the moment the table already has existing
+	// rows and no default is given -- true even on a fresh install that
+	// has, say, migrated Peer rows from a PARTIAL prior failed migration
+	// attempt, not just on a real production upgrade. Adding it here first
+	// makes this safe unconditionally.
+	for _, table := range serverIDTables {
+		if err := addServerIDColumnIfMissing(db, table); err != nil {
+			return err
+		}
+	}
+
+	if alreadyMigrated {
+		return nil
+	}
+
+	if !migrator.HasTable(&model.Server{}) {
+		return nil
+	}
+
+	var serverCount int64
+	if err := db.Model(&model.Server{}).Count(&serverCount).Error; err != nil {
+		return err
+	}
+	if serverCount == 0 {
+		// Fresh install, or an upgrade that happens to run before any
+		// server was ever created -- the column now exists (added above),
+		// but there's no real server ID to backfill existing rows with yet
+		// (there are no such rows either, in this case). Any Interface/
+		// Peer/UserManagerAccount row created from here on is always
+		// created with a real ServerID already set by the application
+		// code, never through this backfill path.
+		return nil
+	}
+	if serverCount > 1 {
+		return fmt.Errorf("backfillServerIDForSingleServerInstall: expected at most one server row at this point in the upgrade, found %d -- manual backfill required", serverCount)
+	}
+
+	var server model.Server
+	if err := db.First(&server).Error; err != nil {
+		return err
+	}
+
+	for _, table := range serverIDTables {
+		if err := backfillServerIDValue(db, table, server.ID); err != nil {
+			return err
+		}
+	}
+
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.Interface{}, "idx_interfaces_interface_id"); err != nil {
+		return err
+	}
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.Interface{}, "idx_interfaces_name"); err != nil {
+		return err
+	}
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.Peer{}, "idx_peers_peer_id"); err != nil {
+		return err
+	}
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.Peer{}, "idx_peers_allowed_address"); err != nil {
+		return err
+	}
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.ResellerUserManagerGroup{}, "idx_reseller_um_group"); err != nil {
+		return err
+	}
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.ResellerUserManagerProfile{}, "idx_reseller_um_profile"); err != nil {
+		return err
+	}
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.TunnelHealthStatus{}, "idx_tunnel_health_statuses_interface_name"); err != nil {
+		return err
+	}
+	if err := dropStaleUniqueIndexIfPresent(migrator, &model.TunnelPolicy{}, "idx_tunnel_policies_interface_name"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// backfillBillingLocationKeyWithServerID rewrites every existing
+// ResellerBillingPrice row's LocationKey for the WIREGUARD and
+// USER_MANAGER products from a bare interface/group name (e.g. "wg0") to
+// the server-scoped format "<serverID>:<name>" (e.g. "3:wg0") -- see
+// cmd/jobs/traffic.go's wireGuardBillingLocationKey/
+// userManagerBillingLocationKey, which now build every FRESH ChargeUsage
+// call with this same format. Without this backfill, an admin's existing
+// per-location price row (keyed by the old bare-name format) would simply
+// never match again once ChargeUsage starts looking up the new
+// "<serverID>:<name>" format, silently falling back to the product-wide
+// flat price (or no price at all) instead of the location-specific rate
+// the admin actually configured -- a silent billing-correctness
+// regression, not a crash, so this must run proactively rather than be
+// discovered by a reseller being mis-charged.
+//
+// V2RAY rows are deliberately NEVER touched here -- that product's
+// LocationKey was already PanelID-based (see model.ResellerBillingPrice's
+// own doc comment), not a name, and already collision-safe since
+// XuiPanel.ID is a global primary key independent of any Mikrotik server.
+// APPLICATION rows have no per-location concept at all (see
+// model.Application's own doc comment) and are only ever "" in practice.
+//
+// Idempotent via the same single-server assumption
+// backfillServerIDForSingleServerInstall itself relies on (this function
+// runs immediately after it, against the exact same guaranteed-single-
+// server state): a LocationKey already starting with "<serverID>:" is
+// left untouched, so running this twice (or against a database that was
+// always single-server and never had bare-name rows to begin with) is a
+// clean no-op. Refuses -- exactly like backfillServerIDForSingleServerInstall
+// -- rather than guesses when more than one server exists, since at that
+// point there is no longer a single unambiguous server ID to rewrite a
+// bare old-format name to.
+func backfillBillingLocationKeyWithServerID(db *gorm.DB) error {
+	// Gated the same way, and for the same reason, as
+	// backfillServerIDForSingleServerInstall's own identical gate -- see
+	// that function's doc comment for the exact crash-loop incident this
+	// prevents. A server added normally after this migration already
+	// succeeded once must never make this function see "more than one
+	// server" and refuse on every subsequent boot.
+	version, err := storedSchemaVersion(db)
+	if err != nil {
+		return err
+	}
+	if version >= 29 {
+		return nil
+	}
+
+	migrator := db.Migrator()
+	if !migrator.HasTable(&model.ResellerBillingPrice{}) || !migrator.HasTable(&model.Server{}) {
+		return nil
+	}
+
+	var serverCount int64
+	if err := db.Model(&model.Server{}).Count(&serverCount).Error; err != nil {
+		return err
+	}
+	if serverCount == 0 {
+		return nil
+	}
+	if serverCount > 1 {
+		return fmt.Errorf("backfillBillingLocationKeyWithServerID: expected at most one server row at this point in the upgrade, found %d -- manual backfill required", serverCount)
+	}
+
+	var server model.Server
+	if err := db.First(&server).Error; err != nil {
+		return err
+	}
+	prefix := fmt.Sprintf("%d:", server.ID)
+
+	var prices []model.ResellerBillingPrice
+	if err := db.Where(
+		"product IN (?, ?) AND location_key <> ? AND location_key NOT LIKE ?",
+		model.ResellerBillingProductWireGuard, model.ResellerBillingProductUserManager,
+		"", prefix+"%",
+	).Find(&prices).Error; err != nil {
+		return err
+	}
+
+	for _, price := range prices {
+		newKey := prefix + price.LocationKey
+		if err := db.Model(&model.ResellerBillingPrice{}).Where("id = ?", price.ID).Update("location_key", newKey).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// addServerIDToUserManagerProtocolConfig is a one-time, idempotent migration
+// for a confirmed, reported bug: UserManagerProtocolConfig had exactly one
+// row per protocol SYSTEM-WIDE (enforced by a single-column unique index on
+// Protocol alone), even though the panel already supports multiple MikroTik
+// servers that can each have the same protocol configured with a different
+// real port/public address. Whichever server's settings an admin entered
+// last silently became "the" port/address shown to every customer on that
+// protocol -- including customers whose account actually lives on a
+// different server with a genuinely different port/address. See
+// model.UserManagerProtocolConfig's own doc comment.
+//
+// Unlike backfillServerIDForSingleServerInstall (which ran during the
+// 28->29 upgrade, when this install's OWN multi-server support was brand
+// new and more than one Server row could only mean an inconsistent partial
+// migration), this migration is introduced well after multi-server support
+// already existed and shipped -- a real, intentionally multi-server
+// install can easily already have 2+ servers registered by the time it
+// upgrades past this version. So the only genuinely ambiguous case here is
+// EXISTING, UNSCOPED ROWS in THIS table with more than one server to guess
+// an attribution from -- not "more than one server exists" on its own,
+// which this function must treat as normal. Confirmed, reported incident:
+// an earlier version of this function copied
+// backfillServerIDForSingleServerInstall's "refuse if server count > 1"
+// guard verbatim, which made this migration panic (and permanently
+// crash-loop) on every already-multi-server production install, even
+// though this table itself had zero pre-existing rows to attribute.
+//
+// Gated on the stored schema version so the one-time backfill runs exactly
+// once, during the upgrade to this version, never again after a further
+// server is added normally. Drops the stale single-column unique index by
+// name (addLocationKeyToBillingPrice's same pattern) so AutoMigrate can
+// rebuild it as the composite (server_id, protocol) index the current
+// struct tags declare. A fresh install (zero rows yet) and a database
+// already on the new schema both simply no-op.
+func addServerIDToUserManagerProtocolConfig(db *gorm.DB) error {
+	version, err := storedSchemaVersion(db)
+	if err != nil {
+		return err
+	}
+	alreadyMigrated := version >= 30
+
+	migrator := db.Migrator()
+	if err := addServerIDColumnIfMissing(db, &model.UserManagerProtocolConfig{}); err != nil {
+		return err
+	}
+
+	if alreadyMigrated {
+		return nil
+	}
+
+	if !migrator.HasTable(&model.UserManagerProtocolConfig{}) {
+		return nil
+	}
+
+	var unscopedCount int64
+	if err := db.Model(&model.UserManagerProtocolConfig{}).Where("server_id IS NULL OR server_id = 0").Count(&unscopedCount).Error; err != nil {
+		return err
+	}
+	if unscopedCount == 0 {
+		// Nothing existing to attribute -- true whether this is a fresh
+		// table, a database already fully on the new schema, or (the
+		// common real-world case) an already-multi-server install where
+		// this table simply has no rows yet. No ambiguity to refuse on.
+		return dropStaleUniqueIndexIfPresent(migrator, &model.UserManagerProtocolConfig{}, "idx_user_manager_protocol_configs_protocol")
+	}
+
+	if !migrator.HasTable(&model.Server{}) {
+		return nil
+	}
+	var serverCount int64
+	if err := db.Model(&model.Server{}).Count(&serverCount).Error; err != nil {
+		return err
+	}
+	if serverCount == 0 {
+		return nil
+	}
+	if serverCount > 1 {
+		return fmt.Errorf("addServerIDToUserManagerProtocolConfig: found %d existing unscoped protocol config row(s) but %d servers registered -- no single unambiguous server to attribute them to, manual backfill required", unscopedCount, serverCount)
+	}
+
+	var server model.Server
+	if err := db.First(&server).Error; err != nil {
+		return err
+	}
+	if err := backfillServerIDValue(db, &model.UserManagerProtocolConfig{}, server.ID); err != nil {
+		return err
+	}
+
+	return dropStaleUniqueIndexIfPresent(migrator, &model.UserManagerProtocolConfig{}, "idx_user_manager_protocol_configs_protocol")
+}
+
+// backfillServerIDColumn adds the server_id column to table (if its table
+// already exists and the column doesn't yet -- a fresh install's AutoMigrate
+// call creates the table with the column already present and never reaches
+// this function for it) and sets every existing row to serverID.
+//
+// Deliberately does NOT use migrator.AddColumn(table, "ServerID") the way
+// backfillFaoximaDomain's own FaoximaDomain add does -- every ServerID
+// field is tagged `not null`, and GORM/SQLite's ADD COLUMN ... NOT NULL
+// with no DEFAULT genuinely fails outright on SQLite when the column has
+// no default value to backfill existing rows with (confirmed: "Cannot add
+// a NOT NULL column with default value NULL"), unlike FaoximaDomain, which
+// has no not-null constraint at all and so never hits this. Adding the
+// column as plain nullable via raw SQL first, then backfilling every row's
+// value, sidesteps that -- GORM's own AutoMigrate (which always runs
+// immediately after this whole backfill) never retroactively tightens an
+// already-existing column to NOT NULL at the SQLite level either (SQLite
+// has no ALTER COLUMN support for that), so the NOT NULL tag from here on
+// is enforced at the application level (every INSERT this codebase
+// performs always sets ServerID explicitly), exactly like how this
+// codebase already accepts GORM's own soft-delete/timestamp columns being
+// application-enforced rather than DB-enforced elsewhere.
+func addServerIDColumnIfMissing(db *gorm.DB, table interface{}) error {
+	migrator := db.Migrator()
+	if !migrator.HasTable(table) {
+		return nil
+	}
+	if migrator.HasColumn(table, "server_id") {
+		return nil
+	}
+
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(table); err != nil {
+		return err
+	}
+
+	return db.Exec(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN `server_id` integer", stmt.Table)).Error
+}
+
+// backfillServerIDValue sets every row of table whose server_id is still
+// NULL (i.e. it existed before addServerIDColumnIfMissing added the
+// column) to serverID -- called only once backfillServerIDForSingleServerInstall
+// has confirmed there is exactly one real server to attribute them to.
+func backfillServerIDValue(db *gorm.DB, table interface{}, serverID uint) error {
+	migrator := db.Migrator()
+	if !migrator.HasTable(table) {
+		return nil
+	}
+
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(table); err != nil {
+		return err
+	}
+
+	return db.Table(stmt.Table).Where("server_id IS NULL").Update("server_id", serverID).Error
+}
+
+// dropStaleUniqueIndexIfPresent drops indexName if it's still present on
+// table, exactly like addLocationKeyToBillingPrice's own
+// idx_reseller_billing_price handling above -- AutoMigrate, which always
+// runs immediately after this whole backfill, then recreates the index
+// correctly widened to the composite form the current model struct tags
+// declare. A database already on the new schema (or a fresh install) has no
+// such narrower index to find, so this simply no-ops. indexName is passed
+// explicitly (GORM's own default single-column naming convention,
+// "idx_<table>_<column>") rather than derived, matching
+// addLocationKeyToBillingPrice's own precedent of a literal index-name
+// string.
+func dropStaleUniqueIndexIfPresent(migrator gorm.Migrator, table interface{}, indexName string) error {
+	if !migrator.HasIndex(table, indexName) {
+		return nil
+	}
+	return migrator.DropIndex(table, indexName)
+}
+
 // previousHardcodedFaoximaDomain is this panel's own historical hardcoded
 // Faoxima webhook domain, before it became an admin-editable BotSettings
 // field -- used ONLY by backfillFaoximaDomain, to keep already-provisioned
@@ -525,6 +941,33 @@ func dropStaleTunnelHealthTables(db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+// storedSchemaVersion returns the schema_version recorded by the last
+// successful AutoMigrate run, or -1 if none is stored yet (fresh install,
+// or a database whose system_configs table doesn't exist at all -- same
+// "nothing to report" treatment dropStaleTunnelHealthTables already gives
+// a missing table/row, since a query against a missing table is a SQL
+// error rather than gorm.ErrRecordNotFound). A non-numeric stored value
+// also returns -1 rather than erroring, so a corrupt/unexpected value is
+// treated as "run the gated migration" instead of panicking AutoMigrate.
+func storedSchemaVersion(db *gorm.DB) (int, error) {
+	if !db.Migrator().HasTable(&model.SystemConfig{}) {
+		return -1, nil
+	}
+	var cfg model.SystemConfig
+	err := db.Where("key = ?", "schema_version").First(&cfg).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return -1, nil
+		}
+		return -1, err
+	}
+	version, convErr := strconv.Atoi(cfg.Value)
+	if convErr != nil {
+		return -1, nil
+	}
+	return version, nil
 }
 
 // recordSchemaVersion upserts the current schema version into SystemConfig.

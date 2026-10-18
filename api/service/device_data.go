@@ -131,30 +131,49 @@ func (d *DeviceData) GetDeviceData() (*schema.DeviceStatsResponse, error) {
 		trafficInfo = nil
 	}
 
-	info, err := d.getDeviceInfo()
-	if err != nil {
-		// getDeviceInfo already logs its own error.
-		info = nil
-	}
+	// These four device-level reads (board info, identity, IPv4, DNS) each
+	// describe ONE physical router, not a cross-server aggregate -- see
+	// resolveDefaultServerID's own doc comment for why they resolve "the"
+	// server the same way this dashboard always implicitly has.
+	serverID, serverIDErr := d.resolveDefaultServerID()
 
-	identity, err := d.getDeviceIdentity()
-	if err != nil {
-		identity = nil
-	}
+	var info *schema.DeviceInfo
+	var identity *schema.DeviceIdentity
+	var ipv4 *schema.DeviceIPv4Address
+	var dns *schema.DNSConfig
+	var deviceServerID uint
+	var deviceServerName string
 
-	ipv4, err := d.getDeviceIpAddress()
-	if err != nil {
-		// getDeviceIpAddress already returns a non-nil (partial) result
-		// alongside a non-nil error for most of its own internal
-		// failures -- ipv4 is kept as-is here (may still carry a partial
-		// IPv4/ISP) rather than discarded, matching its own established
-		// "best effort" contract.
-		d.logger.Warn("device IP address lookup incomplete", zap.Error(err))
-	}
+	if serverIDErr != nil {
+		d.logger.Error("failed to resolve a server for device-level stats", zap.Error(serverIDErr))
+	} else {
+		if info, err = d.getDeviceInfo(serverID); err != nil {
+			// getDeviceInfo already logs its own error.
+			info = nil
+		}
 
-	dns, err := d.getDNSConfig()
-	if err != nil {
-		dns = nil
+		if identity, err = d.getDeviceIdentity(serverID); err != nil {
+			identity = nil
+		}
+
+		if ipv4, err = d.getDeviceIpAddress(serverID); err != nil {
+			// getDeviceIpAddress already returns a non-nil (partial) result
+			// alongside a non-nil error for most of its own internal
+			// failures -- ipv4 is kept as-is here (may still carry a partial
+			// IPv4/ISP) rather than discarded, matching its own established
+			// "best effort" contract.
+			d.logger.Warn("device IP address lookup incomplete", zap.Error(err))
+		}
+
+		if dns, err = d.getDNSConfig(serverID); err != nil {
+			dns = nil
+		}
+
+		deviceServerID = serverID
+		var server model.Server
+		if err := d.db.First(&server, serverID).Error; err == nil {
+			deviceServerName = server.Name
+		}
 	}
 
 	return &schema.DeviceStatsResponse{
@@ -166,6 +185,8 @@ func (d *DeviceData) GetDeviceData() (*schema.DeviceStatsResponse, error) {
 		DeviceIdentity:    identity,
 		DeviceIPv4Address: ipv4,
 		DNSConfig:         dns,
+		DeviceServerID:    deviceServerID,
+		DeviceServerName:  deviceServerName,
 	}, nil
 }
 
@@ -197,8 +218,25 @@ func (d *DeviceData) getTrafficInfo() (*schema.TrafficInfo, error) {
 	}, nil
 }
 
-func (d *DeviceData) getDeviceInfo() (*schema.DeviceInfo, error) {
-	info, err := d.mikrotikAdaptor.FetchDeviceInfo(context.Background())
+// resolveDefaultServerID picks the server this dashboard's device-level
+// widgets (board info, identity, IPv4, DNS) describe. These widgets have
+// always implicitly shown exactly one physical router -- there's no
+// existing concept of a multi-server dashboard view for them -- so this
+// simply names that pre-existing assumption explicitly (lowest server ID)
+// rather than changing behavior. A real multi-server device dashboard is
+// out of scope for this change; see ForEachActiveServer for the aggregate-
+// across-every-server pattern used elsewhere (GetServersData, tunnel
+// health/graph) where that distinction actually matters.
+func (d *DeviceData) resolveDefaultServerID() (uint, error) {
+	var server model.Server
+	if err := d.db.First(&server).Error; err != nil {
+		return 0, err
+	}
+	return server.ID, nil
+}
+
+func (d *DeviceData) getDeviceInfo(serverID uint) (*schema.DeviceInfo, error) {
+	info, err := d.mikrotikAdaptor.ForServer(serverID).FetchDeviceInfo(context.Background())
 	if err != nil {
 		d.logger.Error("failed to fetch device resource", zap.Error(err))
 		return nil, err
@@ -217,8 +255,8 @@ func (d *DeviceData) getDeviceInfo() (*schema.DeviceInfo, error) {
 	}, nil
 }
 
-func (d *DeviceData) getDeviceIdentity() (*schema.DeviceIdentity, error) {
-	identity, err := d.mikrotikAdaptor.FetchDeviceIdentity(context.Background())
+func (d *DeviceData) getDeviceIdentity(serverID uint) (*schema.DeviceIdentity, error) {
+	identity, err := d.mikrotikAdaptor.ForServer(serverID).FetchDeviceIdentity(context.Background())
 	if err != nil {
 		d.logger.Error("failed to fetch device identity", zap.Error(err))
 		return nil, err
@@ -229,10 +267,10 @@ func (d *DeviceData) getDeviceIdentity() (*schema.DeviceIdentity, error) {
 	}, nil
 }
 
-func (d *DeviceData) getDeviceIpAddress() (*schema.DeviceIPv4Address, error) {
+func (d *DeviceData) getDeviceIpAddress(serverID uint) (*schema.DeviceIPv4Address, error) {
 	deviceIpData := &schema.DeviceIPv4Address{}
 
-	ipv4Addresses, err := d.mikrotikAdaptor.FetchIPv4Addresses(context.Background())
+	ipv4Addresses, err := d.mikrotikAdaptor.ForServer(serverID).FetchIPv4Addresses(context.Background())
 	if err != nil {
 		d.logger.Error("failed to fetch IPv4 address", zap.Error(err))
 		return deviceIpData, err
@@ -244,9 +282,8 @@ func (d *DeviceData) getDeviceIpAddress() (*schema.DeviceIPv4Address, error) {
 		}
 	}
 
-	// TODO : multi-server support
 	var server model.Server
-	if err := d.db.First(&server).Error; err != nil {
+	if err := d.db.First(&server, serverID).Error; err != nil {
 		d.logger.Error("failed to fetch server record from database", zap.Error(err))
 		return deviceIpData, err
 	}
@@ -295,8 +332,8 @@ func (d *DeviceData) getDeviceIpAddress() (*schema.DeviceIPv4Address, error) {
 	return deviceIpData, err
 }
 
-func (d *DeviceData) getDNSConfig() (*schema.DNSConfig, error) {
-	dns, err := d.mikrotikAdaptor.FetchDNSConfig(context.Background())
+func (d *DeviceData) getDNSConfig(serverID uint) (*schema.DNSConfig, error) {
+	dns, err := d.mikrotikAdaptor.ForServer(serverID).FetchDNSConfig(context.Background())
 	if err != nil {
 		d.logger.Error("failed to fetch dns config", zap.Error(err))
 		return nil, err

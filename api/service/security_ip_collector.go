@@ -48,28 +48,43 @@ func NewSecurityIPCollectorService(db *gorm.DB, mikrotikAdaptor *mikrotik.Adapto
 func (s *SecurityIPCollectorService) Collect() {
 	ctx := context.Background()
 
-	if peers, err := s.mikrotikAdaptor.FetchWgPeers(ctx); err != nil {
-		s.logger.Warn("failed to fetch wireguard peers for security IP collection", zap.Error(err))
-	} else {
+	var servers []model.Server
+	s.db.Find(&servers)
+
+	{
 		var dbPeers []model.Peer
 		s.db.Find(&dbPeers)
-		peerByRouterID := make(map[string]model.Peer, len(dbPeers))
+		// Keyed by (ServerID, PeerID) together -- RouterOS's own peer
+		// ".id" is only unique within one router. See WgPeer.GetPeers'
+		// own doc comment on the same issue.
+		type serverPeerKey struct {
+			serverID uint
+			peerID   string
+		}
+		peerByKey := make(map[serverPeerKey]model.Peer, len(dbPeers))
 		for _, p := range dbPeers {
-			peerByRouterID[p.PeerID] = p
+			peerByKey[serverPeerKey{serverID: p.ServerID, peerID: p.PeerID}] = p
 		}
 
-		stillOnline := make(map[string]bool, len(peers))
-		for _, peer := range peers {
-			if peer.CurrentEndpointAddress == nil || *peer.CurrentEndpointAddress == "" {
+		stillOnline := make(map[string]bool, len(dbPeers))
+		for _, server := range servers {
+			peers, err := s.mikrotikAdaptor.ForServer(server.ID).FetchWgPeers(ctx)
+			if err != nil {
+				s.logger.Warn("failed to fetch wireguard peers for security IP collection", zap.Uint("server_id", server.ID), zap.Error(err))
 				continue
 			}
-			dbPeer, ok := peerByRouterID[peer.ID]
-			if !ok {
-				continue
+			for _, peer := range peers {
+				if peer.CurrentEndpointAddress == nil || *peer.CurrentEndpointAddress == "" {
+					continue
+				}
+				dbPeer, ok := peerByKey[serverPeerKey{serverID: server.ID, peerID: peer.ID}]
+				if !ok {
+					continue
+				}
+				peerID := dbPeer.ID
+				stillOnline[dbPeer.Name] = true
+				s.reconcile(model.UsageProtocolWireGuard, dbPeer.Name, &peerID, nil, *peer.CurrentEndpointAddress)
 			}
-			peerID := dbPeer.ID
-			stillOnline[dbPeer.Name] = true
-			s.reconcile(model.UsageProtocolWireGuard, dbPeer.Name, &peerID, nil, *peer.CurrentEndpointAddress)
 		}
 		// Close every row this protocol still has open for an identity
 		// that did NOT appear in this tick's active list -- confirmed,
@@ -83,9 +98,7 @@ func (s *SecurityIPCollectorService) Collect() {
 		s.closeStaleOpenRows(model.UsageProtocolWireGuard, stillOnline)
 	}
 
-	if sessions, err := s.mikrotikAdaptor.FetchPPPActiveSessions(ctx); err != nil {
-		s.logger.Warn("failed to fetch ppp active sessions for security IP collection", zap.Error(err))
-	} else {
+	{
 		var accounts []model.UserManagerAccount
 		s.db.Find(&accounts)
 		accountByUsername := make(map[string]model.UserManagerAccount, len(accounts))
@@ -93,18 +106,25 @@ func (s *SecurityIPCollectorService) Collect() {
 			accountByUsername[a.Username] = a
 		}
 
-		stillOnline := make(map[string]bool, len(sessions))
-		for _, session := range sessions {
-			if session.CallerID == "" || session.Name == "" {
+		stillOnline := make(map[string]bool, len(accounts))
+		for _, server := range servers {
+			sessions, err := s.mikrotikAdaptor.ForServer(server.ID).FetchPPPActiveSessions(ctx)
+			if err != nil {
+				s.logger.Warn("failed to fetch ppp active sessions for security IP collection", zap.Uint("server_id", server.ID), zap.Error(err))
 				continue
 			}
-			account, ok := accountByUsername[session.Name]
-			if !ok {
-				continue
+			for _, session := range sessions {
+				if session.CallerID == "" || session.Name == "" {
+					continue
+				}
+				account, ok := accountByUsername[session.Name]
+				if !ok {
+					continue
+				}
+				accountID := account.ID
+				stillOnline[session.Name] = true
+				s.reconcile(model.UsageProtocolUserManager, session.Name, nil, &accountID, session.CallerID)
 			}
-			accountID := account.ID
-			stillOnline[session.Name] = true
-			s.reconcile(model.UsageProtocolUserManager, session.Name, nil, &accountID, session.CallerID)
 		}
 		s.closeStaleOpenRows(model.UsageProtocolUserManager, stillOnline)
 	}

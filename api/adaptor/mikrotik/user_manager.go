@@ -84,10 +84,10 @@ type PPPActiveSession struct {
 
 // CreateUserManagerUser implements confirmed command group (1):
 // /user-manager/user/add name=<username> password=<password> shared-users=<count>
-func (a *Adaptor) CreateUserManagerUser(c context.Context, user UserManagerUser) (*UserManagerUser, error) {
+func (s *ServerAdaptor) CreateUserManagerUser(c context.Context, user UserManagerUser) (*UserManagerUser, error) {
 	var created UserManagerUser
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Put(
 		c,
@@ -96,7 +96,7 @@ func (a *Adaptor) CreateUserManagerUser(c context.Context, user UserManagerUser)
 		&created,
 	)
 	if err != nil {
-		a.logger.Error("failed to create user manager user", zap.Error(err))
+		s.adaptor.logger.Error("failed to create user manager user", zap.Error(err))
 		return nil, err
 	}
 
@@ -105,10 +105,10 @@ func (a *Adaptor) CreateUserManagerUser(c context.Context, user UserManagerUser)
 
 // SetUserManagerUserGroup implements confirmed command group (2):
 // /user-manager/user/set numbers=<id> group=<group name>
-func (a *Adaptor) SetUserManagerUserGroup(c context.Context, userID string, group string) (*UserManagerUser, error) {
+func (s *ServerAdaptor) SetUserManagerUserGroup(c context.Context, userID string, group string) (*UserManagerUser, error) {
 	var updated UserManagerUser
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Patch(
 		c,
@@ -117,7 +117,7 @@ func (a *Adaptor) SetUserManagerUserGroup(c context.Context, userID string, grou
 		&updated,
 	)
 	if err != nil {
-		a.logger.Error("failed to set user manager user group", zap.Error(err))
+		s.adaptor.logger.Error("failed to set user manager user group", zap.Error(err))
 		return nil, err
 	}
 
@@ -127,10 +127,10 @@ func (a *Adaptor) SetUserManagerUserGroup(c context.Context, userID string, grou
 // SetUserManagerUserPassword changes an existing account's password on
 // RouterOS. Same REST shape as SetUserManagerUserGroup -- a PATCH with only
 // the one field being changed.
-func (a *Adaptor) SetUserManagerUserPassword(c context.Context, userID string, password string) (*UserManagerUser, error) {
+func (s *ServerAdaptor) SetUserManagerUserPassword(c context.Context, userID string, password string) (*UserManagerUser, error) {
 	var updated UserManagerUser
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Patch(
 		c,
@@ -139,7 +139,7 @@ func (a *Adaptor) SetUserManagerUserPassword(c context.Context, userID string, p
 		&updated,
 	)
 	if err != nil {
-		a.logger.Error("failed to set user manager user password", zap.Error(err))
+		s.adaptor.logger.Error("failed to set user manager user password", zap.Error(err))
 		return nil, err
 	}
 
@@ -149,10 +149,10 @@ func (a *Adaptor) SetUserManagerUserPassword(c context.Context, userID string, p
 // SetUserManagerUserDisabled toggles an account's disabled state, used by
 // the panel's own enable/disable/suspend-by-quota actions. Same REST shape
 // as SetUserManagerUserGroup.
-func (a *Adaptor) SetUserManagerUserDisabled(c context.Context, userID string, disabled string) (*UserManagerUser, error) {
+func (s *ServerAdaptor) SetUserManagerUserDisabled(c context.Context, userID string, disabled string) (*UserManagerUser, error) {
 	var updated UserManagerUser
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Patch(
 		c,
@@ -161,7 +161,7 @@ func (a *Adaptor) SetUserManagerUserDisabled(c context.Context, userID string, d
 		&updated,
 	)
 	if err != nil {
-		a.logger.Error("failed to set user manager user disabled state", zap.Error(err))
+		s.adaptor.logger.Error("failed to set user manager user disabled state", zap.Error(err))
 		return nil, err
 	}
 
@@ -171,10 +171,10 @@ func (a *Adaptor) SetUserManagerUserDisabled(c context.Context, userID string, d
 // FetchUserManagerUsers implements the /user-manager/user/print half of
 // confirmed command groups relying on a full listing (used to resolve a
 // username to its RouterOS .id).
-func (a *Adaptor) FetchUserManagerUsers(c context.Context) ([]UserManagerUser, error) {
+func (s *ServerAdaptor) FetchUserManagerUsers(c context.Context) ([]UserManagerUser, error) {
 	var users []UserManagerUser
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -182,7 +182,7 @@ func (a *Adaptor) FetchUserManagerUsers(c context.Context) ([]UserManagerUser, e
 		&users,
 	)
 	if err != nil {
-		a.logger.Error("failed to fetch user manager users", zap.Error(err))
+		s.adaptor.logger.Error("failed to fetch user manager users", zap.Error(err))
 		return nil, err
 	}
 
@@ -191,10 +191,10 @@ func (a *Adaptor) FetchUserManagerUsers(c context.Context) ([]UserManagerUser, e
 
 // FetchUserManagerUserGroups implements confirmed command group (4):
 // /user-manager/user/group/print .proplist=name,default-name
-func (a *Adaptor) FetchUserManagerUserGroups(c context.Context) ([]UserManagerUserGroup, error) {
+func (s *ServerAdaptor) FetchUserManagerUserGroups(c context.Context) ([]UserManagerUserGroup, error) {
 	var groups []UserManagerUserGroup
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -202,7 +202,7 @@ func (a *Adaptor) FetchUserManagerUserGroups(c context.Context) ([]UserManagerUs
 		&groups,
 	)
 	if err != nil {
-		a.logger.Error("failed to fetch user manager user groups", zap.Error(err))
+		s.adaptor.logger.Error("failed to fetch user manager user groups", zap.Error(err))
 		return nil, err
 	}
 
@@ -211,10 +211,10 @@ func (a *Adaptor) FetchUserManagerUserGroups(c context.Context) ([]UserManagerUs
 
 // FetchUserManagerProfiles implements confirmed command group (5):
 // /user-manager/profile/print .proplist=name
-func (a *Adaptor) FetchUserManagerProfiles(c context.Context) ([]UserManagerProfile, error) {
+func (s *ServerAdaptor) FetchUserManagerProfiles(c context.Context) ([]UserManagerProfile, error) {
 	var profiles []UserManagerProfile
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -222,7 +222,7 @@ func (a *Adaptor) FetchUserManagerProfiles(c context.Context) ([]UserManagerProf
 		&profiles,
 	)
 	if err != nil {
-		a.logger.Error("failed to fetch user manager profiles", zap.Error(err))
+		s.adaptor.logger.Error("failed to fetch user manager profiles", zap.Error(err))
 		return nil, err
 	}
 
@@ -240,10 +240,10 @@ func (a *Adaptor) FetchUserManagerProfiles(c context.Context) ([]UserManagerProf
 // account's Profile in a single bulk call (Group is already available
 // directly on UserManagerUser -- see that struct), instead of one request
 // per imported account.
-func (a *Adaptor) FetchUserManagerUserProfileLinks(c context.Context) ([]UserManagerUserProfile, error) {
+func (s *ServerAdaptor) FetchUserManagerUserProfileLinks(c context.Context) ([]UserManagerUserProfile, error) {
 	var links []UserManagerUserProfile
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -251,7 +251,7 @@ func (a *Adaptor) FetchUserManagerUserProfileLinks(c context.Context) ([]UserMan
 		&links,
 	)
 	if err != nil {
-		a.logger.Error("failed to fetch user manager user-profile links", zap.Error(err))
+		s.adaptor.logger.Error("failed to fetch user manager user-profile links", zap.Error(err))
 		return nil, err
 	}
 
@@ -260,10 +260,10 @@ func (a *Adaptor) FetchUserManagerUserProfileLinks(c context.Context) ([]UserMan
 
 // CreateUserManagerUserProfile implements the first half of confirmed
 // command group (3): /user-manager/user-profile/add user=<username> profile=<profile>
-func (a *Adaptor) CreateUserManagerUserProfile(c context.Context, link UserManagerUserProfile) (*UserManagerUserProfile, error) {
+func (s *ServerAdaptor) CreateUserManagerUserProfile(c context.Context, link UserManagerUserProfile) (*UserManagerUserProfile, error) {
 	var created UserManagerUserProfile
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Put(
 		c,
@@ -272,7 +272,7 @@ func (a *Adaptor) CreateUserManagerUserProfile(c context.Context, link UserManag
 		&created,
 	)
 	if err != nil {
-		a.logger.Error("failed to create user manager user-profile link", zap.Error(err))
+		s.adaptor.logger.Error("failed to create user manager user-profile link", zap.Error(err))
 		return nil, err
 	}
 
@@ -288,7 +288,7 @@ func (a *Adaptor) CreateUserManagerUserProfile(c context.Context, link UserManag
 	// of silently deferring it to an unrelated delete call much later.
 	if created.ID == "" {
 		err := fmt.Errorf("router did not return a profile-link id for %q -- the account may need to be created manually or the RouterOS firmware/API may not support this operation as expected", link.Profile)
-		a.logger.Error("user manager user-profile link created with an empty id", zap.String("profile", link.Profile))
+		s.adaptor.logger.Error("user manager user-profile link created with an empty id", zap.String("profile", link.Profile))
 		return nil, err
 	}
 
@@ -301,8 +301,8 @@ func (a *Adaptor) CreateUserManagerUserProfile(c context.Context, link UserManag
 // This is a RouterOS "run a command" style endpoint, not a plain CRUD verb
 // -- implemented via POST (already supported by httphelper.Client, simply
 // unused by any other adaptor file so far).
-func (a *Adaptor) ActivateUserManagerUserProfile(c context.Context, linkID string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) ActivateUserManagerUserProfile(c context.Context, linkID string) error {
+	httpClient := s.client()
 
 	err := httpClient.Post(
 		c,
@@ -311,7 +311,7 @@ func (a *Adaptor) ActivateUserManagerUserProfile(c context.Context, linkID strin
 		nil,
 	)
 	if err != nil {
-		a.logger.Error("failed to activate user manager user-profile", zap.Error(err))
+		s.adaptor.logger.Error("failed to activate user manager user-profile", zap.Error(err))
 		return err
 	}
 
@@ -323,8 +323,8 @@ func (a *Adaptor) ActivateUserManagerUserProfile(c context.Context, linkID strin
 //
 // Another "run a command" style endpoint (POST, same reasoning as
 // ActivateUserManagerUserProfile above).
-func (a *Adaptor) MonitorUserManagerUser(c context.Context, userID string) (*UserManagerMonitorResult, error) {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) MonitorUserManagerUser(c context.Context, userID string) (*UserManagerMonitorResult, error) {
+	httpClient := s.client()
 
 	// The REST envelope for /user-manager/user/monitor was never confirmed
 	// against a live response (see the UNCONFIRMED note on
@@ -342,19 +342,19 @@ func (a *Adaptor) MonitorUserManagerUser(c context.Context, userID string) (*Use
 		&raw,
 	)
 	if err != nil {
-		a.logger.Error("failed to monitor user manager user",
+		s.adaptor.logger.Error("failed to monitor user manager user",
 			zap.String("routeros_user_id", userID),
 			zap.Error(err))
 		return nil, err
 	}
 
-	a.logger.Debug("user manager monitor raw response",
+	s.adaptor.logger.Debug("user manager monitor raw response",
 		zap.String("routeros_user_id", userID),
 		zap.ByteString("raw_body", raw))
 
 	result, err := parseUserManagerMonitorResult(raw)
 	if err != nil {
-		a.logger.Error("failed to parse user manager monitor response -- see raw_body for the actual shape RouterOS returned",
+		s.adaptor.logger.Error("failed to parse user manager monitor response -- see raw_body for the actual shape RouterOS returned",
 			zap.String("routeros_user_id", userID),
 			zap.ByteString("raw_body", raw),
 			zap.Error(err))
@@ -408,8 +408,8 @@ func parseUserManagerMonitorResult(raw json.RawMessage) (*UserManagerMonitorResu
 // stored as UserManagerAccount.RouterOSProfileLinkID), addressed as a
 // path segment, matching every other RouterOS REST delete in this
 // codebase (see DeleteUserManagerUser below).
-func (a *Adaptor) DeleteUserManagerUserProfile(c context.Context, profileLinkID string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) DeleteUserManagerUserProfile(c context.Context, profileLinkID string) error {
+	httpClient := s.client()
 
 	err := httpClient.Delete(
 		c,
@@ -417,7 +417,7 @@ func (a *Adaptor) DeleteUserManagerUserProfile(c context.Context, profileLinkID 
 		nil,
 	)
 	if err != nil {
-		a.logger.Error("failed to delete user manager user-profile link", zap.Error(err))
+		s.adaptor.logger.Error("failed to delete user manager user-profile link", zap.Error(err))
 		return err
 	}
 
@@ -430,8 +430,8 @@ func (a *Adaptor) DeleteUserManagerUserProfile(c context.Context, profileLinkID 
 // Must be called AFTER DeleteUserManagerUserProfile, matching the
 // operator-confirmed order exactly (profile relation first, then the user
 // itself).
-func (a *Adaptor) DeleteUserManagerUser(c context.Context, userID string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) DeleteUserManagerUser(c context.Context, userID string) error {
+	httpClient := s.client()
 
 	err := httpClient.Delete(
 		c,
@@ -439,7 +439,7 @@ func (a *Adaptor) DeleteUserManagerUser(c context.Context, userID string) error 
 		nil,
 	)
 	if err != nil {
-		a.logger.Error("failed to delete user manager user", zap.Error(err))
+		s.adaptor.logger.Error("failed to delete user manager user", zap.Error(err))
 		return err
 	}
 
@@ -448,10 +448,10 @@ func (a *Adaptor) DeleteUserManagerUser(c context.Context, userID string) error 
 
 // FetchPPPActiveSessions implements the /ppp/active/print half of the
 // confirmed usage-check sequence, used to determine online status.
-func (a *Adaptor) FetchPPPActiveSessions(c context.Context) ([]PPPActiveSession, error) {
+func (s *ServerAdaptor) FetchPPPActiveSessions(c context.Context) ([]PPPActiveSession, error) {
 	var sessions []PPPActiveSession
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -459,7 +459,7 @@ func (a *Adaptor) FetchPPPActiveSessions(c context.Context) ([]PPPActiveSession,
 		&sessions,
 	)
 	if err != nil {
-		a.logger.Error("failed to fetch ppp active sessions", zap.Error(err))
+		s.adaptor.logger.Error("failed to fetch ppp active sessions", zap.Error(err))
 		return nil, err
 	}
 

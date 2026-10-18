@@ -30,10 +30,10 @@ type TorchFlow struct {
 // short, see ToolTorchPath's own doc comment for why). Unlike the CLI
 // command, this REST call blocks for roughly durationSeconds then returns
 // one bounded JSON array -- it does not keep streaming after that.
-func (a *Adaptor) FetchTorchFlows(c context.Context, ifaceName string, durationSeconds int) ([]TorchFlow, error) {
+func (s *ServerAdaptor) FetchTorchFlows(c context.Context, ifaceName string, durationSeconds int) ([]TorchFlow, error) {
 	var flows []TorchFlow
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	reqBody := map[string]string{
 		"interface": ifaceName,

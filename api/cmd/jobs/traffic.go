@@ -28,6 +28,7 @@ type PeerUsageNotifier interface {
 // concrete type at wiring time.
 type ResellerQuotaNotifier interface {
 	NotifyQuotaWarning(reseller model.Reseller, percentRemaining int)
+	NotifyProtocolQuotaWarning(reseller model.Reseller, protocolLabel string, usedBytes int64, quotaBytes *int64, percentRemaining int)
 }
 
 // CriticalAlertNotifier is the narrow capability this package needs for
@@ -61,8 +62,10 @@ type ResellerBiller interface {
 	ChargeUsage(resellerID uint, product string, locationKey string, deltaBytes int64) error
 }
 
-// MikrotikAdaptor defines the subset of methods from the real adaptor used by the
-// traffic calculator. Using an interface allows tests to inject a fake adaptor.
+// MikrotikAdaptor defines the subset of methods from the real
+// *mikrotik.ServerAdaptor (a single-server-scoped view -- see
+// mikrotik.Adaptor.ForServer's own doc comment) used by the traffic
+// calculator. Using an interface allows tests to inject a fake adaptor.
 type MikrotikAdaptor interface {
 	FetchWgPeer(ctx context.Context, peerID string) (*mikrotik.WireGuardPeer, error)
 	FetchWgPeers(ctx context.Context) ([]mikrotik.WireGuardPeer, error)
@@ -75,9 +78,37 @@ type MikrotikAdaptor interface {
 	SetUserManagerUserDisabled(ctx context.Context, userID string, disabled string) (*mikrotik.UserManagerUser, error)
 }
 
+// MikrotikAdaptorFactory resolves a server-scoped MikrotikAdaptor for a
+// given server ID -- every Peer/UserManagerAccount/Interface row this
+// package processes now carries its own ServerID (see each model's own
+// doc comment), so every RouterOS call site below must name which server
+// it means instead of relying on the old implicit single-adaptor
+// behavior. This interface exists so tests can inject a fake factory/
+// adaptor pair without depending on the real mikrotik package's concrete
+// types; RealMikrotikAdaptorFactory below is the production implementation
+// wrapping *mikrotik.Adaptor's own identically-shaped ForServer method.
+type MikrotikAdaptorFactory interface {
+	ForServer(serverID uint) MikrotikAdaptor
+}
+
+// RealMikrotikAdaptorFactory adapts *mikrotik.Adaptor's own
+// ForServer(uint) *mikrotik.ServerAdaptor to MikrotikAdaptorFactory's
+// ForServer(uint) MikrotikAdaptor -- Go interfaces require an exact method
+// signature match, so *mikrotik.Adaptor cannot satisfy
+// MikrotikAdaptorFactory directly even though *mikrotik.ServerAdaptor
+// structurally implements MikrotikAdaptor; this thin wrapper (one method,
+// one line) is the production value passed to NewTrafficCalculator.
+type RealMikrotikAdaptorFactory struct {
+	Adaptor *mikrotik.Adaptor
+}
+
+func (f RealMikrotikAdaptorFactory) ForServer(serverID uint) MikrotikAdaptor {
+	return f.Adaptor.ForServer(serverID)
+}
+
 type Calculator struct {
 	db              *gorm.DB
-	mikrotikAdaptor MikrotikAdaptor
+	mikrotikAdaptor MikrotikAdaptorFactory
 	// mu guards WireGuard peer state only -- CalculatePeerTraffic,
 	// ResetPeerUsage(s), and ResetTotalTrafficUsage (the only three
 	// methods that ever take it) all read/write model.Peer /
@@ -135,7 +166,7 @@ type Calculator struct {
 	resellerQuotaMuMu sync.Mutex
 }
 
-func NewTrafficCalculator(db *gorm.DB, mikrotikAdaptor MikrotikAdaptor, notifier PeerUsageNotifier) *Calculator {
+func NewTrafficCalculator(db *gorm.DB, mikrotikAdaptor MikrotikAdaptorFactory, notifier PeerUsageNotifier) *Calculator {
 	return &Calculator{
 		db:                   db,
 		mikrotikAdaptor:      mikrotikAdaptor,
@@ -240,7 +271,7 @@ func (c *Calculator) CalculateDailyTraffic() {
 	}
 
 	for _, iface := range interfaces {
-		wgInterface, err := c.mikrotikAdaptor.FetchInterface(context.Background(), iface.InterfaceID)
+		wgInterface, err := c.mikrotikAdaptor.ForServer(iface.ServerID).FetchInterface(context.Background(), iface.InterfaceID)
 		if err != nil {
 			c.logger.Error("Failed to fetch WireGuard interface", zap.String("interfaceID", iface.InterfaceID), zap.Error(err))
 			continue
@@ -427,7 +458,7 @@ func (c *Calculator) CalculateUserManagerUsage() {
 // any early return below -- a monitor/parse failure, or a failed DB write)
 // tells the caller this account contributed nothing usable this tick.
 func (c *Calculator) processUserManagerAccountUsage(account model.UserManagerAccount) (resellerID *uint, group string, delta int64) {
-	result, err := c.mikrotikAdaptor.MonitorUserManagerUser(context.Background(), account.RouterOSUserID)
+	result, err := c.mikrotikAdaptor.ForServer(account.ServerID).MonitorUserManagerUser(context.Background(), account.RouterOSUserID)
 	if err != nil {
 		c.logger.Error("Failed to monitor user manager user", zap.String("username", account.Username), zap.Error(err))
 		return nil, "", 0
@@ -504,7 +535,7 @@ func (c *Calculator) processUserManagerAccountUsage(account model.UserManagerAcc
 		updates["suspended_by_traffic_limit"] = true
 		account.Disabled = true
 
-		if _, err := c.mikrotikAdaptor.SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "true"); err != nil {
+		if _, err := c.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "true"); err != nil {
 			c.logger.Error("Failed to disable user manager account on Mikrotik", zap.String("username", account.Username), zap.Error(err))
 		}
 	}
@@ -521,8 +552,23 @@ func (c *Calculator) processUserManagerAccountUsage(account model.UserManagerAcc
 	// deltaDownload+deltaUpload (this account's fresh usage THIS tick only,
 	// not the live-summed total) is what Payment-based billing actually
 	// charges for -- returned to the caller rather than applied here
-	// directly; see this function's own doc comment.
-	return account.ResellerID, account.Group, deltaDownload + deltaUpload
+	// directly; see this function's own doc comment. The returned key is
+	// the billing locationKey, not the bare RouterOS group name -- see
+	// userManagerBillingLocationKey's own doc comment for why.
+	return account.ResellerID, userManagerBillingLocationKey(account.ServerID, account.Group), deltaDownload + deltaUpload
+}
+
+// userManagerBillingLocationKey builds the ResellerBillingPrice.LocationKey
+// a User Manager group is billed under: "<serverID>:<groupName>" rather
+// than the bare group name alone. Now that a group belongs to a specific
+// server (model.UserManagerAccount.ServerID), two different servers can
+// each have their own group named identically (e.g. "default") -- a bare
+// name would let a price configured for server A's "default" group
+// silently also apply to server B's completely unrelated "default" group.
+// Mirrors wireGuardBillingLocationKey's identical reasoning for WireGuard
+// interfaces.
+func userManagerBillingLocationKey(serverID uint, groupName string) string {
+	return fmt.Sprintf("%d:%s", serverID, groupName)
 }
 
 // applyUserManagerResellerQuota mirrors applyResellerQuota's structure
@@ -624,6 +670,23 @@ func (c *Calculator) applyUserManagerResellerQuota(resellerID *uint, groupDeltas
 			return err
 		}
 
+		// Warn once when remaining User Manager quota drops under 10%,
+		// mirroring applyResellerQuota's identical WireGuard-pool warning
+		// above -- this pool is enforced completely separately, so it needs
+		// its own warning and its own latch (UserManagerQuotaWarningSent).
+		if c.quotaNotifier != nil && reseller.UserManagerQuotaBytes != nil && *reseller.UserManagerQuotaBytes > 0 && !reseller.UserManagerQuotaWarningSent {
+			remaining := *reseller.UserManagerQuotaBytes - reseller.UserManagerUsedBytes
+			percentRemaining := int(remaining * 100 / *reseller.UserManagerQuotaBytes)
+			if percentRemaining <= 10 {
+				if err := tx.Model(&model.Reseller{}).Where("id = ?", reseller.ID).Update("user_manager_quota_warning_sent", true).Error; err != nil {
+					c.logger.Error("failed to mark user manager quota warning as sent", zap.Uint("reseller_id", reseller.ID), zap.Error(err))
+				} else {
+					reseller.UserManagerQuotaWarningSent = true
+					c.quotaNotifier.NotifyProtocolQuotaWarning(reseller, "یوزرمنیجر", reseller.UserManagerUsedBytes, reseller.UserManagerQuotaBytes, percentRemaining)
+				}
+			}
+		}
+
 		// Same billing-mode guard as applyResellerQuota's own identical fix
 		// above -- a Payment-based reseller's leftover UserManagerQuotaBytes
 		// (kept, not cleared, on purpose so switching back to Volume-based
@@ -650,7 +713,7 @@ func (c *Calculator) applyUserManagerResellerQuota(resellerID *uint, groupDeltas
 
 		for _, account := range accounts {
 			if c.mikrotikAdaptor != nil {
-				if _, err := c.mikrotikAdaptor.SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "true"); err != nil {
+				if _, err := c.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "true"); err != nil {
 					c.logger.Error("failed to disable user manager account on Mikrotik", zap.String("username", account.Username), zap.Error(err))
 				}
 			}
@@ -693,7 +756,7 @@ func (c *Calculator) ResetPeerUsage(id uint) error {
 		return err
 	}
 
-	wgPeer, err := c.mikrotikAdaptor.FetchWgPeer(context.Background(), peer.PeerID)
+	wgPeer, err := c.mikrotikAdaptor.ForServer(peer.ServerID).FetchWgPeer(context.Background(), peer.PeerID)
 	if err != nil {
 		c.logger.Error("Failed to fetch peer from Mikrotik", zap.String("peerID", peer.PeerID), zap.Error(err))
 		return err
@@ -704,7 +767,7 @@ func (c *Calculator) ResetPeerUsage(id uint) error {
 
 	wasSuspendedByTrafficLimit := peer.SuspendedByTrafficLimit
 	if wasSuspendedByTrafficLimit {
-		if _, err := c.mikrotikAdaptor.UpdateWgPeer(context.Background(), peer.PeerID, mikrotik.WireGuardPeer{
+		if _, err := c.mikrotikAdaptor.ForServer(peer.ServerID).UpdateWgPeer(context.Background(), peer.PeerID, mikrotik.WireGuardPeer{
 			Disabled: strconv.FormatBool(false),
 		}); err != nil {
 			c.logger.Error("Failed to re-enable peer on Mikrotik after usage reset", zap.String("peerID", peer.PeerID), zap.Error(err))
@@ -752,19 +815,32 @@ func (c *Calculator) ResetPeerUsages() error {
 		return err
 	}
 
-	wgPeers, err := c.mikrotikAdaptor.FetchWgPeers(context.Background())
-	if err != nil {
-		c.logger.Error("Failed to fetch peers from Mikrotik", zap.Error(err))
-		return err
+	// Keyed by (ServerID, PeerID) together -- RouterOS's own peer ".id" is
+	// only unique within one router, not across every registered server.
+	// See WgPeer.GetPeers' own doc comment (service/peer.go) on the same
+	// issue.
+	type serverPeerKey struct {
+		serverID uint
+		peerID   string
 	}
-
-	wgPeerMap := make(map[string]mikrotik.WireGuardPeer)
-	for _, wgPeer := range wgPeers {
-		wgPeerMap[wgPeer.ID] = wgPeer
+	serverIDs := make(map[uint]struct{}, len(peers))
+	for _, p := range peers {
+		serverIDs[p.ServerID] = struct{}{}
+	}
+	wgPeerMap := make(map[serverPeerKey]mikrotik.WireGuardPeer, len(peers))
+	for serverID := range serverIDs {
+		wgPeers, err := c.mikrotikAdaptor.ForServer(serverID).FetchWgPeers(context.Background())
+		if err != nil {
+			c.logger.Error("Failed to fetch peers from Mikrotik", zap.Uint("server_id", serverID), zap.Error(err))
+			continue
+		}
+		for _, wgPeer := range wgPeers {
+			wgPeerMap[serverPeerKey{serverID: serverID, peerID: wgPeer.ID}] = wgPeer
+		}
 	}
 
 	for _, peer := range peers {
-		wgPeer, found := wgPeerMap[peer.PeerID]
+		wgPeer, found := wgPeerMap[serverPeerKey{serverID: peer.ServerID, peerID: peer.PeerID}]
 		if !found {
 			continue
 		}
@@ -774,7 +850,7 @@ func (c *Calculator) ResetPeerUsages() error {
 
 		wasSuspendedByTrafficLimit := peer.SuspendedByTrafficLimit
 		if wasSuspendedByTrafficLimit {
-			if _, err := c.mikrotikAdaptor.UpdateWgPeer(context.Background(), peer.PeerID, mikrotik.WireGuardPeer{
+			if _, err := c.mikrotikAdaptor.ForServer(peer.ServerID).UpdateWgPeer(context.Background(), peer.PeerID, mikrotik.WireGuardPeer{
 				Disabled: strconv.FormatBool(false),
 			}); err != nil {
 				c.logger.Error("Failed to re-enable peer on Mikrotik after bulk usage reset", zap.String("peerID", peer.PeerID), zap.Error(err))
@@ -816,7 +892,17 @@ func (c *Calculator) checkConnectivity() {
 		return
 	}
 
-	_, mikrotikErr := c.mikrotikAdaptor.FetchWgPeers(context.Background())
+	// A single global reachability probe, same pre-existing single-server
+	// scope as before -- picks the lowest-ID server, same convention as
+	// DeviceData.resolveDefaultServerID. A genuine per-server connectivity
+	// alert is out of scope for this change.
+	var mikrotikErr error
+	var server model.Server
+	if err := c.db.First(&server).Error; err != nil {
+		mikrotikErr = err
+	} else {
+		_, mikrotikErr = c.mikrotikAdaptor.ForServer(server.ID).FetchWgPeers(context.Background())
+	}
 	dbErr := c.db.Exec("SELECT 1").Error
 
 	reachable := mikrotikErr == nil && dbErr == nil
@@ -851,7 +937,7 @@ func (c *Calculator) fetchPeers() ([]model.Peer, error) {
 }
 
 func (c *Calculator) processPeerTraffic(peer model.Peer, maxCounter int64) {
-	wgPeer, err := c.mikrotikAdaptor.FetchWgPeer(context.Background(), peer.PeerID)
+	wgPeer, err := c.mikrotikAdaptor.ForServer(peer.ServerID).FetchWgPeer(context.Background(), peer.PeerID)
 	if err != nil {
 		// A confirmed, reported log-flood incident this fixes: a peer row
 		// that still exists in this panel's own DB but was deleted directly
@@ -878,7 +964,7 @@ func (c *Calculator) processPeerTraffic(peer model.Peer, maxCounter int64) {
 	if delta := deltaTx + deltaRx; delta > 0 {
 		c.accumulateTotalTraffic(delta)
 		// update reseller usage and enforce quota per reseller
-		c.applyResellerQuota(peer.ResellerID, peer.Interface, delta)
+		c.applyResellerQuota(peer.ResellerID, wireGuardBillingLocationKey(peer.ServerID, peer.Interface), delta)
 		c.accumulatePeerDailyUsage(peer.ID, peer.ResellerID, deltaTx, deltaRx)
 	}
 	if resetDetected {
@@ -909,7 +995,20 @@ func (c *Calculator) processPeerTraffic(peer model.Peer, maxCounter int64) {
 
 }
 
-func (c *Calculator) applyResellerQuota(resellerID *uint, interfaceName string, delta int64) {
+// wireGuardBillingLocationKey builds the ResellerBillingPrice.LocationKey
+// a WireGuard interface is billed under: "<serverID>:<interfaceName>"
+// rather than the bare interface name alone. Interface names are only
+// unique PER SERVER (see model.Interface.ServerID's own doc comment) --
+// two different servers can each have their own "wg0" -- so a bare name
+// would let a price configured for server A's "wg0" silently also apply
+// to server B's completely unrelated "wg0". Mirrors
+// userManagerBillingLocationKey's identical reasoning for User Manager
+// groups.
+func wireGuardBillingLocationKey(serverID uint, interfaceName string) string {
+	return fmt.Sprintf("%d:%s", serverID, interfaceName)
+}
+
+func (c *Calculator) applyResellerQuota(resellerID *uint, locationKey string, delta int64) {
 	if resellerID == nil || delta <= 0 {
 		return
 	}
@@ -938,11 +1037,12 @@ func (c *Calculator) applyResellerQuota(resellerID *uint, interfaceName string, 
 	// safe to call unconditionally before the byte-quota bookkeeping below,
 	// which still runs regardless of billing mode (see
 	// ResellerBillingService's own top-level doc comment on why both paths
-	// always execute). interfaceName is this peer's own WireGuard
-	// interface -- the "location" a reseller may be priced differently
-	// for (see ChargeUsage's own doc comment on locationKey).
+	// always execute). locationKey is this peer's own WireGuard interface,
+	// scoped to its server (see wireGuardBillingLocationKey) -- the
+	// "location" a reseller may be priced differently for (see
+	// ChargeUsage's own doc comment on locationKey).
 	if c.billing != nil {
-		if err := c.billing.ChargeUsage(*resellerID, "WIREGUARD", interfaceName, delta); err != nil {
+		if err := c.billing.ChargeUsage(*resellerID, "WIREGUARD", locationKey, delta); err != nil {
 			c.logger.Warn("charge usage failed for reseller", zap.Uint("reseller_id", *resellerID), zap.Error(err))
 		}
 	}
@@ -1034,7 +1134,7 @@ func (c *Calculator) disablePeersForBillingSuspension(tx *gorm.DB, resellerID ui
 
 	for _, p := range peers {
 		if c.mikrotikAdaptor != nil {
-			if _, err := c.mikrotikAdaptor.UpdateWgPeer(context.Background(), p.PeerID, mikrotik.WireGuardPeer{Disabled: strconv.FormatBool(true)}); err != nil {
+			if _, err := c.mikrotikAdaptor.ForServer(p.ServerID).UpdateWgPeer(context.Background(), p.PeerID, mikrotik.WireGuardPeer{Disabled: strconv.FormatBool(true)}); err != nil {
 				c.logger.Error("failed to disable peer on Mikrotik", zap.String("peerID", p.PeerID), zap.Error(err))
 			}
 		}
@@ -1083,7 +1183,7 @@ func (c *Calculator) applyPeerTrafficLimit(peer *model.Peer, updates map[string]
 		updates["disabled"] = true
 		updates["suspended_by_traffic_limit"] = true
 
-		_, err := c.mikrotikAdaptor.UpdateWgPeer(context.Background(), peer.PeerID, mikrotik.WireGuardPeer{
+		_, err := c.mikrotikAdaptor.ForServer(peer.ServerID).UpdateWgPeer(context.Background(), peer.PeerID, mikrotik.WireGuardPeer{
 			Disabled: strconv.FormatBool(true),
 		})
 		if err != nil {

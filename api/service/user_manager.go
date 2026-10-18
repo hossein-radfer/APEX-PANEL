@@ -170,11 +170,15 @@ func (s *UserManagerService) ensureResellerUnderUserManagerAccountLimit(reseller
 
 // ensureResellerCanUseGroup mirrors WgPeer.isInterfaceAssignedToReseller's
 // "must be explicitly assigned, no empty-means-all fallback" contract, but
-// against ResellerUserManagerGroup instead of ResellerInterface.
-func (s *UserManagerService) ensureResellerCanUseGroup(resellerID uint, group string) error {
+// against ResellerUserManagerGroup instead of ResellerInterface. serverID
+// scopes the check to the specific server the account is being created on
+// -- a group name like "default" is only unique PER SERVER (see
+// ResellerUserManagerGroup.ServerID's own doc comment), so a grant on
+// server A must never authorize the same-named group on server B.
+func (s *UserManagerService) ensureResellerCanUseGroup(resellerID, serverID uint, group string) error {
 	var count int64
 	if err := s.db.Model(&model.ResellerUserManagerGroup{}).
-		Where("reseller_id = ? AND group_name = ?", resellerID, group).
+		Where("reseller_id = ? AND server_id = ? AND group_name = ?", resellerID, serverID, group).
 		Count(&count).Error; err != nil {
 		return err
 	}
@@ -186,10 +190,10 @@ func (s *UserManagerService) ensureResellerCanUseGroup(resellerID uint, group st
 
 // ensureResellerCanUseProfile mirrors ensureResellerCanUseGroup exactly,
 // for RouterOS User Manager profiles.
-func (s *UserManagerService) ensureResellerCanUseProfile(resellerID uint, profile string) error {
+func (s *UserManagerService) ensureResellerCanUseProfile(resellerID, serverID uint, profile string) error {
 	var count int64
 	if err := s.db.Model(&model.ResellerUserManagerProfile{}).
-		Where("reseller_id = ? AND profile_name = ?", resellerID, profile).
+		Where("reseller_id = ? AND server_id = ? AND profile_name = ?", resellerID, serverID, profile).
 		Count(&count).Error; err != nil {
 		return err
 	}
@@ -308,6 +312,7 @@ func (s *UserManagerService) BulkCreateAccounts(req *schema.BulkCreateUserManage
 		password := randomAccountCredential(i)
 
 		account, err := s.CreateAccount(&schema.CreateUserManagerAccountRequest{
+			ServerID:     req.ServerID,
 			Username:     username,
 			Password:     password,
 			Group:        req.Group,
@@ -355,6 +360,12 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 		}
 	}
 
+	serverID, err := resolveServerID(s.db, req.ServerID)
+	if err != nil {
+		s.logger.Error("failed to resolve server for new user manager account", zap.Error(err))
+		return nil, err
+	}
+
 	if resellerID != nil {
 		if err := s.ensureResellerCanCreateUserManagerAccounts(*resellerID); err != nil {
 			return nil, err
@@ -362,10 +373,10 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 		if err := s.ensureResellerUnderUserManagerAccountLimit(*resellerID); err != nil {
 			return nil, err
 		}
-		if err := s.ensureResellerCanUseGroup(*resellerID, req.Group); err != nil {
+		if err := s.ensureResellerCanUseGroup(*resellerID, serverID, req.Group); err != nil {
 			return nil, err
 		}
-		if err := s.ensureResellerCanUseProfile(*resellerID, req.Profile); err != nil {
+		if err := s.ensureResellerCanUseProfile(*resellerID, serverID, req.Profile); err != nil {
 			return nil, err
 		}
 	}
@@ -382,8 +393,10 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 
 	ctx := context.Background()
 
+	adaptor := s.mikrotikAdaptor.ForServer(serverID)
+
 	password := req.Password
-	createdUser, err := s.mikrotikAdaptor.CreateUserManagerUser(ctx, mikrotik.UserManagerUser{
+	createdUser, err := adaptor.CreateUserManagerUser(ctx, mikrotik.UserManagerUser{
 		Name:        req.Username,
 		Password:    &password,
 		SharedUsers: &sharedUsersStr,
@@ -393,12 +406,12 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 		return nil, fmt.Errorf("failed to create user manager account: %w", err)
 	}
 
-	if _, err := s.mikrotikAdaptor.SetUserManagerUserGroup(ctx, createdUser.ID, req.Group); err != nil {
+	if _, err := adaptor.SetUserManagerUserGroup(ctx, createdUser.ID, req.Group); err != nil {
 		s.logger.Error("failed to set user manager user group", zap.Error(err))
 		return nil, fmt.Errorf("failed to assign group: %w", err)
 	}
 
-	profileLink, err := s.mikrotikAdaptor.CreateUserManagerUserProfile(ctx, mikrotik.UserManagerUserProfile{
+	profileLink, err := adaptor.CreateUserManagerUserProfile(ctx, mikrotik.UserManagerUserProfile{
 		User:    req.Username,
 		Profile: req.Profile,
 	})
@@ -407,7 +420,7 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 		return nil, fmt.Errorf("failed to bind profile: %w", err)
 	}
 
-	if err := s.mikrotikAdaptor.ActivateUserManagerUserProfile(ctx, profileLink.ID); err != nil {
+	if err := adaptor.ActivateUserManagerUserProfile(ctx, profileLink.ID); err != nil {
 		s.logger.Error("failed to activate user manager profile", zap.Error(err))
 		return nil, fmt.Errorf("failed to activate profile: %w", err)
 	}
@@ -427,6 +440,7 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 
 	account := model.UserManagerAccount{
 		UUID:                  uuid.New().String(),
+		ServerID:              serverID,
 		Username:              req.Username,
 		Password:              req.Password,
 		RouterOSUserID:        createdUser.ID,
@@ -457,11 +471,11 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 		// operation" pattern for the profile-link half) removes both the
 		// profile-link relation and the RouterOS user itself, so the
 		// username is immediately available again for a retry.
-		if err := s.mikrotikAdaptor.DeleteUserManagerUserProfile(ctx, profileLink.ID); err != nil {
+		if err := adaptor.DeleteUserManagerUserProfile(ctx, profileLink.ID); err != nil {
 			s.logger.Warn("failed to roll back user manager profile link after a failed database write",
 				zap.String("username", req.Username), zap.Error(err))
 		}
-		if err := s.mikrotikAdaptor.DeleteUserManagerUser(ctx, createdUser.ID); err != nil {
+		if err := adaptor.DeleteUserManagerUser(ctx, createdUser.ID); err != nil {
 			s.logger.Warn("failed to roll back user manager user on mikrotik after a failed database write -- it may need manual removal",
 				zap.String("username", req.Username), zap.Error(err))
 		}
@@ -469,7 +483,7 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 		return nil, fmt.Errorf("failed to store user manager account: %w", err)
 	}
 
-	s.seedUsageBaseline(ctx, createdUser.ID, account.Username)
+	s.seedUsageBaseline(adaptor, ctx, createdUser.ID, account.Username)
 
 	s.logResellerAction(resellerID, AuditActionUserManagerAccountCreated, fmt.Sprintf("Created user manager account %q (%s)", account.Username, account.Protocols))
 
@@ -531,23 +545,34 @@ func (s *UserManagerService) CreateAccount(req *schema.CreateUserManagerAccountR
 //     account's entire historical lifetime usage as a single "new" delta
 //     against the freshly-imported limit, incorrectly tripping it
 //     immediately even for an account that's actually well within quota.
-func (s *UserManagerService) BulkImportAccounts(fileContent string, resellerID *uint) (*schema.BulkImportAccountsResult, error) {
+func (s *UserManagerService) BulkImportAccounts(fileContent string, resellerID *uint, reqServerID *uint) (*schema.BulkImportAccountsResult, error) {
 	if resellerID != nil {
 		if err := s.ensureResellerCanCreateUserManagerAccounts(*resellerID); err != nil {
 			return nil, err
 		}
 	}
 
+	// BulkImportAccounts matches against an existing RouterOS account by
+	// Username alone, scoped to exactly one server -- reqServerID picks
+	// which one (nil falls back to this install's one server, same
+	// convention as CreateAccount/CreateInterface's own ServerID handling).
+	serverID, err := resolveServerID(s.db, reqServerID)
+	if err != nil {
+		s.logger.Error("bulk import: failed to resolve server", zap.Error(err))
+		return nil, err
+	}
+	adaptor := s.mikrotikAdaptor.ForServer(serverID)
+
 	lines, malformed := ParseBulkImportFile(fileContent)
 
 	ctx := context.Background()
 
-	routerUsers, err := s.mikrotikAdaptor.FetchUserManagerUsers(ctx)
+	routerUsers, err := adaptor.FetchUserManagerUsers(ctx)
 	if err != nil {
 		s.logger.Error("bulk import: failed to fetch user manager users", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch accounts from mikrotik: %w", err)
 	}
-	profileLinks, err := s.mikrotikAdaptor.FetchUserManagerUserProfileLinks(ctx)
+	profileLinks, err := adaptor.FetchUserManagerUserProfileLinks(ctx)
 	if err != nil {
 		s.logger.Error("bulk import: failed to fetch user manager user-profile links", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch account profiles from mikrotik: %w", err)
@@ -601,7 +626,7 @@ func (s *UserManagerService) BulkImportAccounts(fileContent string, resellerID *
 				continue
 			}
 			result.AlreadyImported++
-			s.seedUsageBaseline(ctx, routerUser.ID, existing.Username)
+			s.seedUsageBaseline(adaptor, ctx, routerUser.ID, existing.Username)
 			continue
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -611,6 +636,7 @@ func (s *UserManagerService) BulkImportAccounts(fileContent string, resellerID *
 
 		account := model.UserManagerAccount{
 			UUID:           uuid.New().String(),
+			ServerID:       serverID,
 			Username:       line.Username,
 			Password:       utils.RandomString(12),
 			RouterOSUserID: routerUser.ID,
@@ -629,7 +655,7 @@ func (s *UserManagerService) BulkImportAccounts(fileContent string, resellerID *
 			continue
 		}
 		result.Imported++
-		s.seedUsageBaseline(ctx, routerUser.ID, account.Username)
+		s.seedUsageBaseline(adaptor, ctx, routerUser.ID, account.Username)
 	}
 
 	s.logResellerAction(resellerID, AuditActionUserManagerAccountCreated,
@@ -653,8 +679,8 @@ func (s *UserManagerService) BulkImportAccounts(fileContent string, resellerID *
 // failure here just means the account starts with a zero baseline (the
 // pre-existing behavior before this seeding was added anywhere), logged
 // but not fatal to the caller.
-func (s *UserManagerService) seedUsageBaseline(ctx context.Context, routerOSUserID, username string) {
-	result, err := s.mikrotikAdaptor.MonitorUserManagerUser(ctx, routerOSUserID)
+func (s *UserManagerService) seedUsageBaseline(adaptor *mikrotik.ServerAdaptor, ctx context.Context, routerOSUserID, username string) {
+	result, err := adaptor.MonitorUserManagerUser(ctx, routerOSUserID)
 	if err != nil {
 		s.logger.Warn("failed to seed usage baseline, will start from zero", zap.String("username", username), zap.Error(err))
 		return
@@ -680,11 +706,11 @@ func (s *UserManagerService) seedUsageBaseline(ctx context.Context, routerOSUser
 // by username -- the same source GetAccountUsage/GetSelfSummary use. Only
 // appropriate for single-record responses (Create/Update); listAccountsScoped
 // fetches sessions once for the whole list instead of once per row.
-func (s *UserManagerService) isAccountOnline(ctx context.Context, username string) bool {
+func (s *UserManagerService) isAccountOnline(ctx context.Context, serverID uint, username string) bool {
 	if s.mikrotikAdaptor == nil {
 		return false
 	}
-	sessions, err := s.mikrotikAdaptor.FetchPPPActiveSessions(ctx)
+	sessions, err := s.mikrotikAdaptor.ForServer(serverID).FetchPPPActiveSessions(ctx)
 	if err != nil {
 		s.logger.Warn("failed to fetch ppp active sessions for online status", zap.String("username", username), zap.Error(err))
 		return false
@@ -709,11 +735,11 @@ func (s *UserManagerService) UpdateAccount(id uint, req *schema.UpdateUserManage
 
 	if req.Group != "" && req.Group != account.Group {
 		if resellerID != nil {
-			if err := s.ensureResellerCanUseGroup(*resellerID, req.Group); err != nil {
+			if err := s.ensureResellerCanUseGroup(*resellerID, account.ServerID, req.Group); err != nil {
 				return nil, err
 			}
 		}
-		if _, err := s.mikrotikAdaptor.SetUserManagerUserGroup(ctx, account.RouterOSUserID, req.Group); err != nil {
+		if _, err := s.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserGroup(ctx, account.RouterOSUserID, req.Group); err != nil {
 			s.logger.Error("failed to update user manager user group", zap.Error(err))
 			return nil, fmt.Errorf("failed to update group: %w", err)
 		}
@@ -722,7 +748,7 @@ func (s *UserManagerService) UpdateAccount(id uint, req *schema.UpdateUserManage
 
 	if req.Profile != "" && req.Profile != account.Profile {
 		if resellerID != nil {
-			if err := s.ensureResellerCanUseProfile(*resellerID, req.Profile); err != nil {
+			if err := s.ensureResellerCanUseProfile(*resellerID, account.ServerID, req.Profile); err != nil {
 				return nil, err
 			}
 		}
@@ -759,7 +785,7 @@ func (s *UserManagerService) UpdateAccount(id uint, req *schema.UpdateUserManage
 		if *req.Disabled {
 			disabledStr = "true"
 		}
-		if _, err := s.mikrotikAdaptor.SetUserManagerUserDisabled(ctx, account.RouterOSUserID, disabledStr); err != nil {
+		if _, err := s.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserDisabled(ctx, account.RouterOSUserID, disabledStr); err != nil {
 			s.logger.Error("failed to update user manager user disabled state", zap.Error(err))
 			return nil, fmt.Errorf("failed to update status: %w", err)
 		}
@@ -794,7 +820,7 @@ func (s *UserManagerService) UpdateAccount(id uint, req *schema.UpdateUserManage
 		return nil, fmt.Errorf("failed to update user manager account: %w", err)
 	}
 
-	resp := s.transformAccountToResponse(account, s.isAccountOnline(ctx, account.Username))
+	resp := s.transformAccountToResponse(account, s.isAccountOnline(ctx, account.ServerID, account.Username))
 	return &resp, nil
 }
 
@@ -808,13 +834,15 @@ func (s *UserManagerService) UpdateAccount(id uint, req *schema.UpdateUserManage
 // DeleteAccount's own profile-link cleanup); creating/activating the new
 // one is not -- a failure there is returned to the caller.
 func (s *UserManagerService) relinkUserManagerProfile(ctx context.Context, account *model.UserManagerAccount, profile string) (*mikrotik.UserManagerUserProfile, error) {
+	adaptor := s.mikrotikAdaptor.ForServer(account.ServerID)
+
 	if account.RouterOSProfileLinkID != nil {
-		if err := s.mikrotikAdaptor.DeleteUserManagerUserProfile(ctx, *account.RouterOSProfileLinkID); err != nil {
+		if err := adaptor.DeleteUserManagerUserProfile(ctx, *account.RouterOSProfileLinkID); err != nil {
 			s.logger.Warn("failed to remove old user manager profile link during re-link", zap.Error(err))
 		}
 	}
 
-	newLink, err := s.mikrotikAdaptor.CreateUserManagerUserProfile(ctx, mikrotik.UserManagerUserProfile{
+	newLink, err := adaptor.CreateUserManagerUserProfile(ctx, mikrotik.UserManagerUserProfile{
 		User:    account.Username,
 		Profile: profile,
 	})
@@ -822,7 +850,7 @@ func (s *UserManagerService) relinkUserManagerProfile(ctx context.Context, accou
 		s.logger.Error("failed to bind new user manager profile", zap.Error(err))
 		return nil, fmt.Errorf("failed to bind new profile: %w", err)
 	}
-	if err := s.mikrotikAdaptor.ActivateUserManagerUserProfile(ctx, newLink.ID); err != nil {
+	if err := adaptor.ActivateUserManagerUserProfile(ctx, newLink.ID); err != nil {
 		s.logger.Error("failed to activate new user manager profile", zap.Error(err))
 		return nil, fmt.Errorf("failed to activate new profile: %w", err)
 	}
@@ -854,7 +882,7 @@ func (s *UserManagerService) ToggleAccountStatus(id uint, resellerID *uint) erro
 		disabledStr = "true"
 	}
 
-	if _, err := s.mikrotikAdaptor.SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, disabledStr); err != nil {
+	if _, err := s.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, disabledStr); err != nil {
 		s.logger.Error("failed to toggle user manager user status on mikrotik", zap.Error(err))
 		return fmt.Errorf("failed to toggle user manager account status: %w", err)
 	}
@@ -881,7 +909,7 @@ func (s *UserManagerService) ChangeAccountPassword(id uint, newPassword string, 
 		return fmt.Errorf("account not found: %w", err)
 	}
 
-	if _, err := s.mikrotikAdaptor.SetUserManagerUserPassword(context.Background(), account.RouterOSUserID, newPassword); err != nil {
+	if _, err := s.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserPassword(context.Background(), account.RouterOSUserID, newPassword); err != nil {
 		s.logger.Error("failed to change user manager user password on mikrotik", zap.String("username", account.Username), zap.Error(err))
 		return fmt.Errorf("failed to change password: %w", err)
 	}
@@ -923,7 +951,7 @@ func (s *UserManagerService) DeleteAccount(id uint, resellerID *uint) error {
 	// V2RayPackageLocation's own doc comment for the same principle
 	// applied to x-ui panel calls).
 	if account.RouterOSProfileLinkID != nil && *account.RouterOSProfileLinkID != "" {
-		if err := s.mikrotikAdaptor.DeleteUserManagerUserProfile(ctx, *account.RouterOSProfileLinkID); err != nil {
+		if err := s.mikrotikAdaptor.ForServer(account.ServerID).DeleteUserManagerUserProfile(ctx, *account.RouterOSProfileLinkID); err != nil {
 			s.logger.Warn("failed to delete user manager profile link from mikrotik -- proceeding to delete the account anyway, since this relation is either already gone or was never valid",
 				zap.Uint("account_id", account.ID), zap.String("username", account.Username), zap.Error(err))
 		}
@@ -940,7 +968,7 @@ func (s *UserManagerService) DeleteAccount(id uint, resellerID *uint) error {
 	// tolerated exactly like the profile-link cleanup above, while any
 	// OTHER error (a genuine connectivity/permission failure) still blocks
 	// the delete as before.
-	if err := s.mikrotikAdaptor.DeleteUserManagerUser(ctx, account.RouterOSUserID); err != nil && !isMikrotikNotFoundError(err) {
+	if err := s.mikrotikAdaptor.ForServer(account.ServerID).DeleteUserManagerUser(ctx, account.RouterOSUserID); err != nil && !isMikrotikNotFoundError(err) {
 		s.logger.Error("failed to delete user manager user from mikrotik", zap.Error(err))
 		return fmt.Errorf("failed to delete user manager account: %w", err)
 	}
@@ -1014,7 +1042,7 @@ func (s *UserManagerService) ResetUsage(id uint, resellerID *uint) error {
 
 	wasSuspendedByTrafficLimit := account.SuspendedByTrafficLimit
 	if wasSuspendedByTrafficLimit {
-		if _, err := s.mikrotikAdaptor.SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "false"); err != nil {
+		if _, err := s.mikrotikAdaptor.ForServer(account.ServerID).SetUserManagerUserDisabled(context.Background(), account.RouterOSUserID, "false"); err != nil {
 			s.logger.Error("failed to re-enable user manager account on mikrotik after usage reset", zap.Uint("account_id", account.ID), zap.Error(err))
 			return fmt.Errorf("failed to re-enable account: %w", err)
 		}
@@ -1085,25 +1113,35 @@ func (s *UserManagerService) listAccountsScoped(resellerID *uint) (*[]schema.Use
 		return nil, fmt.Errorf("failed to fetch user manager accounts: %w", err)
 	}
 
-	// One bulk /ppp/active/print call for the whole list, not one per
+	// One bulk /ppp/active/print call per registered server, not one per
 	// account -- mirrors GetSelfSummary's pattern. Best-effort: a RouterOS
-	// hiccup (or, in tests, no adaptor configured at all) degrades to
-	// "nobody shown online" rather than failing the list.
+	// hiccup on any one server (or, in tests, no adaptor configured at all)
+	// degrades to "nobody shown online for that server" rather than failing
+	// the whole list -- Username stays globally unique across servers (see
+	// model.UserManagerAccount.ServerID's own doc comment), so collecting
+	// online usernames across every server and matching by username alone
+	// is still correct.
 	onlineUsernames := make(map[string]struct{})
 	if s.mikrotikAdaptor != nil {
-		if sessions, err := s.mikrotikAdaptor.FetchPPPActiveSessions(context.Background()); err != nil {
-			s.logger.Warn("failed to fetch ppp active sessions for account list", zap.Error(err))
-		} else {
+		var servers []model.Server
+		s.db.Find(&servers)
+		for _, server := range servers {
+			sessions, err := s.mikrotikAdaptor.ForServer(server.ID).FetchPPPActiveSessions(context.Background())
+			if err != nil {
+				s.logger.Warn("failed to fetch ppp active sessions for account list", zap.Uint("server_id", server.ID), zap.Error(err))
+				continue
+			}
 			for _, session := range sessions {
 				onlineUsernames[session.Name] = struct{}{}
 			}
 		}
 	}
 
+	serverNames := s.serverNamesByID()
 	responses := make([]schema.UserManagerAccountResponse, 0, len(accounts))
 	for _, account := range accounts {
 		_, isOnline := onlineUsernames[account.Username]
-		responses = append(responses, s.transformAccountToResponse(account, isOnline))
+		responses = append(responses, s.transformAccountToResponseWithServerNames(account, isOnline, serverNames))
 	}
 
 	return &responses, nil
@@ -1121,8 +1159,9 @@ func (s *UserManagerService) GetAccountUsage(id uint, resellerID *uint) (downloa
 	}
 
 	ctx := context.Background()
+	adaptor := s.mikrotikAdaptor.ForServer(account.ServerID)
 
-	sessions, err := s.mikrotikAdaptor.FetchPPPActiveSessions(ctx)
+	sessions, err := adaptor.FetchPPPActiveSessions(ctx)
 	if err != nil {
 		s.logger.Error("failed to fetch ppp active sessions", zap.Error(err))
 	} else {
@@ -1134,7 +1173,7 @@ func (s *UserManagerService) GetAccountUsage(id uint, resellerID *uint) (downloa
 		}
 	}
 
-	result, err := s.mikrotikAdaptor.MonitorUserManagerUser(ctx, account.RouterOSUserID)
+	result, err := adaptor.MonitorUserManagerUser(ctx, account.RouterOSUserID)
 	if err != nil {
 		s.logger.Error("failed to monitor user manager user", zap.Error(err))
 		return 0, 0, isOnline, fmt.Errorf("failed to fetch usage: %w", err)
@@ -1180,15 +1219,23 @@ func (s *UserManagerService) GetSelfSummary(resellerID uint) (*schema.UserManage
 	}
 
 	online := 0
-	if sessions, err := s.mikrotikAdaptor.FetchPPPActiveSessions(context.Background()); err != nil {
-		// Best-effort, matching GetAccountShareDetails/GetAccountUsage's
-		// precedent -- a RouterOS hiccup should degrade to "0 online
-		// shown" rather than fail the whole dashboard summary.
-		s.logger.Warn("failed to fetch ppp active sessions for user manager summary", zap.Uint("resellerID", resellerID), zap.Error(err))
-	} else {
-		for _, session := range sessions {
-			if _, ok := usernames[session.Name]; ok {
-				online++
+	{
+		var servers []model.Server
+		s.db.Find(&servers)
+		for _, server := range servers {
+			sessions, err := s.mikrotikAdaptor.ForServer(server.ID).FetchPPPActiveSessions(context.Background())
+			if err != nil {
+				// Best-effort, matching GetAccountShareDetails/GetAccountUsage's
+				// precedent -- a RouterOS hiccup should degrade to "0 online
+				// shown for that server" rather than fail the whole dashboard
+				// summary.
+				s.logger.Warn("failed to fetch ppp active sessions for user manager summary", zap.Uint("resellerID", resellerID), zap.Uint("server_id", server.ID), zap.Error(err))
+				continue
+			}
+			for _, session := range sessions {
+				if _, ok := usernames[session.Name]; ok {
+					online++
+				}
 			}
 		}
 	}
@@ -1239,17 +1286,26 @@ func buildUserManagerProtocolInfos(db *gorm.DB, logger *zap.Logger, account mode
 		return nil, fmt.Errorf("account has no protocols configured")
 	}
 
+	// Confirmed, reported bug this fixes: this used to look up both the
+	// fallback server address AND the protocol config row with no server
+	// scoping at all (db.First(&server) picked whichever server happened
+	// to be first, and the config lookup matched on protocol alone) -- a
+	// customer whose account lives on a server other than the first one,
+	// or whose protocol was configured differently on their own server,
+	// was silently shown a DIFFERENT server's address/port on their own
+	// connection-info page. Both lookups are now scoped to the account's
+	// own ServerID.
 	var defaultServerAddress string
 	var server model.Server
-	if err := db.First(&server).Error; err == nil {
+	if err := db.First(&server, account.ServerID).Error; err == nil {
 		defaultServerAddress = server.IPAddress
 	}
 
 	protocolInfos := make([]schema.UserManagerShareProtocolInfo, 0, len(accountProtocols))
 	for _, protocol := range accountProtocols {
 		var protocolConfig model.UserManagerProtocolConfig
-		if err := db.Where("protocol = ?", protocol).First(&protocolConfig).Error; err != nil {
-			logger.Warn("skipping unconfigured protocol", zap.String("protocol", string(protocol)), zap.Error(err))
+		if err := db.Where("protocol = ? AND server_id = ?", protocol, account.ServerID).First(&protocolConfig).Error; err != nil {
+			logger.Warn("skipping unconfigured protocol", zap.String("protocol", string(protocol)), zap.Uint("server_id", account.ServerID), zap.Error(err))
 			continue
 		}
 
@@ -1310,7 +1366,7 @@ func (s *UserManagerService) GetAccountShareDetails(uuidStr string) (*schema.Use
 	// requires it): a Mikrotik outage must not take down the whole share
 	// page, only degrade the "online" badge to "unknown/offline".
 	isOnline := false
-	if sessions, err := s.mikrotikAdaptor.FetchPPPActiveSessions(context.Background()); err != nil {
+	if sessions, err := s.mikrotikAdaptor.ForServer(account.ServerID).FetchPPPActiveSessions(context.Background()); err != nil {
 		s.logger.Warn("failed to fetch ppp active sessions for share page online status", zap.String("uuid", uuidStr), zap.Error(err))
 	} else {
 		for _, session := range sessions {
@@ -1339,28 +1395,31 @@ func (s *UserManagerService) GetAccountShareDetails(uuidStr string) (*schema.Use
 // EnsureProtocolForSharedAccount validates that uuid belongs to a currently
 // shared account (same IsShared/ShareExpireTime gate as
 // GetAccountShareDetails) AND that requestedProtocol is one of the
-// protocols this specific account was granted, then returns it typed --
-// used to authorize the public per-protocol certificate/client-app file
-// downloads without requiring a second, separate credential (knowing a
-// valid share link already proves the caller is an intended recipient), while
-// still preventing a customer sold only e.g. OpenVPN from downloading the
-// L2TP certificate by guessing the query param.
-func (s *UserManagerService) EnsureProtocolForSharedAccount(uuidStr string, requestedProtocol string) (model.UserManagerAccountProtocol, error) {
+// protocols this specific account was granted, then returns it typed along
+// with the account's own ServerID -- used to authorize the public
+// per-protocol certificate/client-app file downloads without requiring a
+// second, separate credential (knowing a valid share link already proves
+// the caller is an intended recipient), while still preventing a customer
+// sold only e.g. OpenVPN from downloading the L2TP certificate by guessing
+// the query param. ServerID is returned (not just the protocol) because the
+// certificate/client-app file is now stored per-(protocol, server) pair,
+// not per-protocol alone -- see UserManagerProtocolFile's own doc comment.
+func (s *UserManagerService) EnsureProtocolForSharedAccount(uuidStr string, requestedProtocol string) (model.UserManagerAccountProtocol, uint, error) {
 	var account model.UserManagerAccount
 	if err := s.db.First(&account, "uuid = ?", uuidStr).Error; err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	if !utils.IsPeerSharable(account.IsShared, account.ShareExpireTime) {
-		return "", common.ErrUserManagerAccountNotShared
+		return "", 0, common.ErrUserManagerAccountNotShared
 	}
 
 	for _, p := range model.ParseProtocols(account.Protocols) {
 		if string(p) == requestedProtocol {
-			return p, nil
+			return p, account.ServerID, nil
 		}
 	}
-	return "", gorm.ErrRecordNotFound
+	return "", 0, gorm.ErrRecordNotFound
 }
 
 // GetAccountShareStatus/UpdateAccountShareStatus/UpdateAccountShareExpire
@@ -1417,9 +1476,20 @@ func (s *UserManagerService) UpdateAccountShareExpire(id uint, expireTime *strin
 
 // ListGroups/ListProfiles are thin RouterOS passthroughs -- no local
 // caching, since RouterOS is the source of truth and groups/profiles are
-// only listed by this panel, never created/edited here.
-func (s *UserManagerService) ListGroups() ([]schema.UserManagerGroupResponse, error) {
-	groups, err := s.mikrotikAdaptor.FetchUserManagerUserGroups(context.Background())
+// only listed by this panel, never created/edited here. reqServerID is
+// resolved via resolveServerID (nil falls back to this install's one
+// server) -- deliberately NEVER merged across multiple servers: a group
+// named "default" on two different routers is not the same group, so a
+// blended list would let an admin pick a group name that only exists on
+// a DIFFERENT server than the one the new account is actually being
+// created on.
+func (s *UserManagerService) ListGroups(reqServerID *uint) ([]schema.UserManagerGroupResponse, error) {
+	serverID, err := resolveServerID(s.db, reqServerID)
+	if err != nil {
+		return nil, err
+	}
+
+	groups, err := s.mikrotikAdaptor.ForServer(serverID).FetchUserManagerUserGroups(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -1431,8 +1501,13 @@ func (s *UserManagerService) ListGroups() ([]schema.UserManagerGroupResponse, er
 	return resp, nil
 }
 
-func (s *UserManagerService) ListProfiles() ([]schema.UserManagerProfileResponse, error) {
-	profiles, err := s.mikrotikAdaptor.FetchUserManagerProfiles(context.Background())
+func (s *UserManagerService) ListProfiles(reqServerID *uint) ([]schema.UserManagerProfileResponse, error) {
+	serverID, err := resolveServerID(s.db, reqServerID)
+	if err != nil {
+		return nil, err
+	}
+
+	profiles, err := s.mikrotikAdaptor.ForServer(serverID).FetchUserManagerProfiles(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -1444,20 +1519,34 @@ func (s *UserManagerService) ListProfiles() ([]schema.UserManagerProfileResponse
 	return resp, nil
 }
 
-// GetProtocolConfigs/UpsertProtocolConfig are plain DB CRUD for the global,
-// admin-only per-protocol port/settings table. Admin-only enforcement
-// happens at the HTTP layer, matching ResellerController's convention.
-func (s *UserManagerService) GetProtocolConfigs() ([]schema.UserManagerProtocolConfigResponse, error) {
+// GetProtocolConfigs/UpsertProtocolConfig are plain DB CRUD for the
+// admin-only per-(protocol, server) port/settings table. Admin-only
+// enforcement happens at the HTTP layer, matching ResellerController's
+// convention. reqServerID is resolved via resolveServerID (nil falls back
+// to this install's one server); GetProtocolConfigs additionally accepts
+// nil forever once more than one server exists, returning every server's
+// rows at once (denormalized with ServerName) so the account-creation UI
+// can still show a port for whichever server a customer ends up on,
+// without forcing a picker just to view the list.
+func (s *UserManagerService) GetProtocolConfigs(reqServerID *uint) ([]schema.UserManagerProtocolConfigResponse, error) {
+	query := s.db.Model(&model.UserManagerProtocolConfig{})
+	if reqServerID != nil {
+		query = query.Where("server_id = ?", *reqServerID)
+	}
+
 	var configs []model.UserManagerProtocolConfig
-	if err := s.db.Find(&configs).Error; err != nil {
+	if err := query.Find(&configs).Error; err != nil {
 		s.logger.Error("failed to fetch user manager protocol configs", zap.Error(err))
 		return nil, err
 	}
 
+	names := s.serverNamesByID()
 	resp := make([]schema.UserManagerProtocolConfigResponse, 0, len(configs))
 	for _, c := range configs {
 		resp = append(resp, schema.UserManagerProtocolConfigResponse{
 			Id:                 c.ID,
+			ServerID:           c.ServerID,
+			ServerName:         names[c.ServerID],
 			Protocol:           string(c.Protocol),
 			Port:               c.Port,
 			ServerAddress:      c.ServerAddress,
@@ -1472,9 +1561,15 @@ func (s *UserManagerService) GetProtocolConfigs() ([]schema.UserManagerProtocolC
 }
 
 func (s *UserManagerService) UpsertProtocolConfig(req *schema.UpsertUserManagerProtocolConfigRequest) (*schema.UserManagerProtocolConfigResponse, error) {
+	serverID, err := resolveServerID(s.db, req.ServerID)
+	if err != nil {
+		s.logger.Error("failed to resolve server for protocol config", zap.Error(err))
+		return nil, err
+	}
+
 	var existing model.UserManagerProtocolConfig
-	err := s.db.Where("protocol = ?", req.Protocol).First(&existing).Error
-	if err == nil {
+	lookupErr := s.db.Where("protocol = ? AND server_id = ?", req.Protocol, serverID).First(&existing).Error
+	if lookupErr == nil {
 		existing.Port = req.Port
 		existing.ServerAddress = req.ServerAddress
 		existing.CertificateName = req.CertificateName
@@ -1484,8 +1579,9 @@ func (s *UserManagerService) UpsertProtocolConfig(req *schema.UpsertUserManagerP
 			s.logger.Error("failed to update user manager protocol config", zap.Error(err))
 			return nil, err
 		}
-	} else if errors.Is(err, gorm.ErrRecordNotFound) {
+	} else if errors.Is(lookupErr, gorm.ErrRecordNotFound) {
 		existing = model.UserManagerProtocolConfig{
+			ServerID:        serverID,
 			Protocol:        model.UserManagerAccountProtocol(req.Protocol),
 			Port:            req.Port,
 			ServerAddress:   req.ServerAddress,
@@ -1498,12 +1594,14 @@ func (s *UserManagerService) UpsertProtocolConfig(req *schema.UpsertUserManagerP
 			return nil, err
 		}
 	} else {
-		s.logger.Error("failed to look up user manager protocol config", zap.Error(err))
-		return nil, err
+		s.logger.Error("failed to look up user manager protocol config", zap.Error(lookupErr))
+		return nil, lookupErr
 	}
 
 	return &schema.UserManagerProtocolConfigResponse{
 		Id:                 existing.ID,
+		ServerID:           existing.ServerID,
+		ServerName:         s.serverNamesByID()[existing.ServerID],
 		Protocol:           string(existing.Protocol),
 		Port:               existing.Port,
 		ServerAddress:      existing.ServerAddress,
@@ -1515,7 +1613,33 @@ func (s *UserManagerService) UpsertProtocolConfig(req *schema.UpsertUserManagerP
 	}, nil
 }
 
+// serverNamesByID returns every registered server's Name keyed by ID, for
+// denormalizing UserManagerAccountResponse.ServerName without an N+1 query
+// per account -- mirrors WgInterface.serverNamesByID's identical pattern.
+func (s *UserManagerService) serverNamesByID() map[uint]string {
+	var servers []model.Server
+	if err := s.db.Find(&servers).Error; err != nil {
+		s.logger.Warn("failed to fetch servers for name lookup", zap.Error(err))
+		return map[uint]string{}
+	}
+	names := make(map[uint]string, len(servers))
+	for _, srv := range servers {
+		names[srv.ID] = srv.Name
+	}
+	return names
+}
+
 func (s *UserManagerService) transformAccountToResponse(account model.UserManagerAccount, isOnline bool) schema.UserManagerAccountResponse {
+	return s.transformAccountToResponseWithServerNames(account, isOnline, s.serverNamesByID())
+}
+
+// transformAccountToResponseWithServerNames is the batched variant used by
+// list endpoints (see listAccountsScoped) to avoid looking up every
+// server's name once per account; transformAccountToResponse calls this
+// internally for single-account use, mirroring
+// WgPeer.transformPeerToResponse/transformPeerToResponseWithServerNames's
+// identical split.
+func (s *UserManagerService) transformAccountToResponseWithServerNames(account model.UserManagerAccount, isOnline bool, serverNames map[uint]string) schema.UserManagerAccountResponse {
 	statuses := s.transformAccountStatus(account)
 
 	var trafficLimit *string
@@ -1532,6 +1656,8 @@ func (s *UserManagerService) transformAccountToResponse(account model.UserManage
 	return schema.UserManagerAccountResponse{
 		Id:            account.ID,
 		UUID:          account.UUID,
+		ServerID:      account.ServerID,
+		ServerName:    serverNames[account.ServerID],
 		Username:      account.Username,
 		Group:         account.Group,
 		Profile:       account.Profile,

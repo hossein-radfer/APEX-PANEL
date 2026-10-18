@@ -54,7 +54,16 @@ func (s *SecurityEtherTorchService) Poll() {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	flows, err := s.mikrotikAdaptor.FetchTorchFlows(ctx, s.interfaceName, securityTorchDurationSeconds)
+	// Same single-server scope as this service's own fixed interfaceName --
+	// see DeviceData.resolveDefaultServerID's own doc comment for the
+	// identical reasoning.
+	var server model.Server
+	if err := s.db.First(&server).Error; err != nil {
+		s.logger.Warn("failed to resolve a server for torch polling", zap.Error(err))
+		return
+	}
+
+	flows, err := s.mikrotikAdaptor.ForServer(server.ID).FetchTorchFlows(ctx, s.interfaceName, securityTorchDurationSeconds)
 	if err != nil {
 		s.logger.Warn("failed to poll torch", zap.String("interface", s.interfaceName), zap.Error(err))
 		return

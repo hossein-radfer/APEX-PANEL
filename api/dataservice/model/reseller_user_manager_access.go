@@ -11,6 +11,12 @@ type ResellerUserManagerGroup struct {
 	Model
 	ResellerID uint   `gorm:"uniqueIndex:idx_reseller_um_group;not null"`
 	GroupName  string `gorm:"type:varchar(255);uniqueIndex:idx_reseller_um_group;not null"`
+	// ServerID scopes this grant to a specific router's group, the same
+	// GroupName existing independently on two different servers -- folded
+	// into the uniqueness constraint so (ResellerID, ServerID, GroupName)
+	// is the real identity, not (ResellerID, GroupName) alone. See
+	// model.Interface.ServerID's own doc comment for the general reasoning.
+	ServerID uint `gorm:"uniqueIndex:idx_reseller_um_group;not null"`
 }
 
 // ResellerUserManagerProfile mirrors ResellerUserManagerGroup exactly, for
@@ -19,4 +25,5 @@ type ResellerUserManagerProfile struct {
 	Model
 	ResellerID  uint   `gorm:"uniqueIndex:idx_reseller_um_profile;not null"`
 	ProfileName string `gorm:"type:varchar(255);uniqueIndex:idx_reseller_um_profile;not null"`
+	ServerID    uint   `gorm:"uniqueIndex:idx_reseller_um_profile;not null"`
 }

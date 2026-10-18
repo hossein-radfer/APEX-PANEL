@@ -191,11 +191,12 @@ function TunnelNatRulesCell({ tunnel }: { tunnel: TunnelMapTunnel }) {
 // This reads the server-COMPUTED hierarchy (service.TunnelGraphService.
 // BuildTunnelMap) directly -- no client-side node/edge reassembly here
 // at all, matching that explicit requirement.
-export function GraphTab() {
+export function GraphTab({ serverId }: { serverId?: number }) {
   const isMobile = useIsMobile()
   const { data: map, isLoading } = useQuery({
-    queryKey: ['tunnel_ai_map'],
-    queryFn: () => fetchTunnelMap(),
+    queryKey: ['tunnel_ai_map', serverId],
+    queryFn: () => fetchTunnelMap(serverId as number),
+    enabled: serverId !== undefined,
     refetchInterval: 60_000,
   })
 

@@ -35,6 +35,15 @@ type V2RaySyncService struct {
 	logger        *zap.Logger
 	usageRecorder *UsageSnapshotWriter
 	billing       *ResellerBillingService
+	quotaNotifier *BotNotifier
+}
+
+// SetQuotaNotifier wires the low-quota Telegram warning after construction,
+// mirroring SetUsageRecorder's own "optional, set once after construction"
+// pattern. Safe to leave unset -- applyResellerV2RayQuota simply skips the
+// warning if nil.
+func (s *V2RaySyncService) SetQuotaNotifier(notifier *BotNotifier) {
+	s.quotaNotifier = notifier
 }
 
 // SetResellerBiller wires the Payment-based billing engine after
@@ -708,6 +717,26 @@ func (s *V2RaySyncService) applyResellerV2RayQuota(resellerID uint, packageUsedB
 			if err := tx.Model(&model.Reseller{}).Where("id = ?", resellerID).Update("v2_ray_used_bytes", totalUsed).Error; err != nil {
 				s.logger.Error("failed to update reseller v2ray usage", zap.Uint("reseller_id", resellerID), zap.Error(err))
 				return err
+			}
+		}
+
+		// Warn once when remaining V2Ray quota drops under 10%, mirroring
+		// applyResellerQuota's/applyUserManagerResellerQuota's identical
+		// warnings for their own pools. Compares against liveUsed (not
+		// totalUsed) for the exact same reason the quota-exceeded check
+		// below does -- see its own doc comment on why a Volume-mode
+		// reseller's remaining headroom must be measured against what
+		// currently exists, not the lifetime-inclusive stored total.
+		if s.quotaNotifier != nil && reseller.V2RayQuotaBytes != nil && *reseller.V2RayQuotaBytes > 0 && !reseller.V2RayQuotaWarningSent {
+			remaining := *reseller.V2RayQuotaBytes - liveUsed
+			percentRemaining := int(remaining * 100 / *reseller.V2RayQuotaBytes)
+			if percentRemaining <= 10 {
+				if err := tx.Model(&model.Reseller{}).Where("id = ?", resellerID).Update("v2_ray_quota_warning_sent", true).Error; err != nil {
+					s.logger.Error("failed to mark v2ray quota warning as sent", zap.Uint("reseller_id", resellerID), zap.Error(err))
+				} else {
+					reseller.V2RayQuotaWarningSent = true
+					s.quotaNotifier.NotifyProtocolQuotaWarning(reseller, "V2Ray", liveUsed, reseller.V2RayQuotaBytes, percentRemaining)
+				}
 			}
 		}
 

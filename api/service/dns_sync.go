@@ -18,9 +18,10 @@ import (
 // so no concurrent goroutines are needed here: one account is one HTTP
 // call).
 type DNSSyncService struct {
-	db     *gorm.DB
-	panels *DNSPanelService
-	logger *zap.Logger
+	db            *gorm.DB
+	panels        *DNSPanelService
+	logger        *zap.Logger
+	quotaNotifier *BotNotifier
 }
 
 func NewDNSSyncService(db *gorm.DB, panels *DNSPanelService) *DNSSyncService {
@@ -29,6 +30,14 @@ func NewDNSSyncService(db *gorm.DB, panels *DNSPanelService) *DNSSyncService {
 		panels: panels,
 		logger: zap.L().Named("DNSSyncService"),
 	}
+}
+
+// SetQuotaNotifier wires the low-quota Telegram warning after construction,
+// mirroring V2RaySyncService.SetQuotaNotifier's own "optional, set once
+// after construction" pattern. Safe to leave unset -- applyResellerDNSQuota
+// simply skips the warning if nil.
+func (s *DNSSyncService) SetQuotaNotifier(notifier *BotNotifier) {
+	s.quotaNotifier = notifier
 }
 
 // SyncAccounts is the scheduled job entrypoint. For every active or
@@ -191,6 +200,23 @@ func (s *DNSSyncService) applyResellerDNSQuota(resellerID uint) {
 
 		if reseller.DNSQuotaBytes == nil {
 			return nil // unlimited
+		}
+
+		// Warn once when remaining DNS quota drops under 10%, mirroring
+		// applyResellerV2RayQuota's identical warning for its own pool.
+		// Compares against liveUsed (not totalUsed) for the same reason
+		// the quota-exceeded check just below does.
+		if s.quotaNotifier != nil && *reseller.DNSQuotaBytes > 0 && !reseller.DNSQuotaWarningSent {
+			remaining := *reseller.DNSQuotaBytes - liveUsed
+			percentRemaining := int(remaining * 100 / *reseller.DNSQuotaBytes)
+			if percentRemaining <= 10 {
+				if err := tx.Model(&model.Reseller{}).Where("id = ?", resellerID).Update("dns_quota_warning_sent", true).Error; err != nil {
+					s.logger.Error("failed to mark dns quota warning as sent", zap.Uint("reseller_id", resellerID), zap.Error(err))
+				} else {
+					reseller.DNSQuotaWarningSent = true
+					s.quotaNotifier.NotifyProtocolQuotaWarning(reseller, "DNS", liveUsed, reseller.DNSQuotaBytes, percentRemaining)
+				}
+			}
 		}
 
 		if totalUsed > *reseller.DNSQuotaBytes {

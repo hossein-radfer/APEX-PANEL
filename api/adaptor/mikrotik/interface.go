@@ -19,10 +19,10 @@ type Interface struct {
 	Type      string `json:"type,omitempty"`
 }
 
-func (a *Adaptor) FetchInterface(c context.Context, interfaceID string) (*Interface, error) {
+func (s *ServerAdaptor) FetchInterface(c context.Context, interfaceID string) (*Interface, error) {
 	var iface Interface
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -42,10 +42,10 @@ func (a *Adaptor) FetchInterface(c context.Context, interfaceID string) (*Interf
 // TunnelGraphService's discovery pass flagged as an infrastructure
 // tunnel, without needing a separate typed fetch call per possible
 // tunnel technology.
-func (a *Adaptor) FetchAllInterfaces(c context.Context) ([]Interface, error) {
+func (s *ServerAdaptor) FetchAllInterfaces(c context.Context) ([]Interface, error) {
 	var ifaces []Interface
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -66,8 +66,8 @@ func (a *Adaptor) FetchAllInterfaces(c context.Context) ([]Interface, error) {
 // type since RouterOS's own disabled=yes|no applies the same way
 // regardless of whether the underlying interface is ether/wireguard/
 // gre/ipip/eoip.
-func (a *Adaptor) SetInterfaceDisabledByName(c context.Context, name string, disabled bool) error {
-	ifaces, err := a.FetchAllInterfaces(c)
+func (s *ServerAdaptor) SetInterfaceDisabledByName(c context.Context, name string, disabled bool) error {
+	ifaces, err := s.FetchAllInterfaces(c)
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func (a *Adaptor) SetInterfaceDisabledByName(c context.Context, name string, dis
 		disabledValue = "true"
 	}
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 	return httpClient.Patch(
 		c,
 		common.InterfacePath+"/"+target.ID,

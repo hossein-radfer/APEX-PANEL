@@ -175,28 +175,41 @@ func (s *UserManagerProtocolHealthService) pollOneProtocol(cfg model.UserManager
 // check existed, L2TP was reported "port not reachable" on every single
 // poll tick even while genuinely serving traffic.
 func (s *UserManagerProtocolHealthService) readRouterEnabled(ctx context.Context, protocol model.UserManagerAccountProtocol) (enabled bool, skipPortProbe bool, err error) {
+	// L2TP/PPTP/SSTP/OpenVPN are GLOBAL, singleton RouterOS config (one
+	// port per protocol, not per-location -- see model.
+	// UserManagerProtocolConfig's own doc comment, and this type's own
+	// top-level doc comment on why this health check is deliberately
+	// per-protocol, not per-server). Same single-server resolution as
+	// DeviceData.resolveDefaultServerID -- a genuine multi-server User
+	// Manager protocol health check is out of scope for this change.
+	var server model.Server
+	if dbErr := s.db.First(&server).Error; dbErr != nil {
+		return false, false, dbErr
+	}
+	adaptor := s.mikrotikAdaptor.ForServer(server.ID)
+
 	switch protocol {
 	case model.ProtocolL2TP:
-		cfg, err := s.mikrotikAdaptor.FetchL2TPServerConfig(ctx)
+		cfg, err := adaptor.FetchL2TPServerConfig(ctx)
 		if err != nil {
 			return false, false, err
 		}
 		usesIpsec := cfg.UseIpsec != nil && *cfg.UseIpsec == "yes"
 		return cfg.Enabled == "true", usesIpsec, nil
 	case model.ProtocolPPTP:
-		cfg, err := s.mikrotikAdaptor.FetchPPTPServerConfig(ctx)
+		cfg, err := adaptor.FetchPPTPServerConfig(ctx)
 		if err != nil {
 			return false, false, err
 		}
 		return cfg.Enabled == "true", false, nil
 	case model.ProtocolSSTP:
-		cfg, err := s.mikrotikAdaptor.FetchSSTPServerConfig(ctx)
+		cfg, err := adaptor.FetchSSTPServerConfig(ctx)
 		if err != nil {
 			return false, false, err
 		}
 		return cfg.Enabled == "true", false, nil
 	case model.ProtocolOpenVPN:
-		cfg, err := s.mikrotikAdaptor.FetchOvpnServerConfig(ctx)
+		cfg, err := adaptor.FetchOvpnServerConfig(ctx)
 		if err != nil {
 			return false, false, err
 		}

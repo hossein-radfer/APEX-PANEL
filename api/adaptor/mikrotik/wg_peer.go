@@ -27,10 +27,10 @@ type WireGuardPeer struct {
 	TransferTx             string  `json:"tx,omitempty"`
 }
 
-func (a *Adaptor) FetchWgPeers(c context.Context) ([]WireGuardPeer, error) {
+func (s *ServerAdaptor) FetchWgPeers(c context.Context) ([]WireGuardPeer, error) {
 	var wgPeers []WireGuardPeer
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -38,7 +38,7 @@ func (a *Adaptor) FetchWgPeers(c context.Context) ([]WireGuardPeer, error) {
 		&wgPeers,
 	)
 	if err != nil {
-		a.logger.Error("failed to get wireguard peers", zap.Error(err))
+		s.adaptor.logger.Error("failed to get wireguard peers", zap.Error(err))
 		return nil, err
 	}
 
@@ -56,10 +56,10 @@ func (a *Adaptor) FetchWgPeers(c context.Context) ([]WireGuardPeer, error) {
 // permanently RouterOS-side-deleted peers still present in this panel's own
 // DB, that meant 3 log lines every single traffic-calculation tick,
 // indefinitely, until the panel's own disk filled up.
-func (a *Adaptor) FetchWgPeer(c context.Context, peerID string) (*WireGuardPeer, error) {
+func (s *ServerAdaptor) FetchWgPeer(c context.Context, peerID string) (*WireGuardPeer, error) {
 	var wgPeer WireGuardPeer
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -73,10 +73,10 @@ func (a *Adaptor) FetchWgPeer(c context.Context, peerID string) (*WireGuardPeer,
 	return &wgPeer, nil
 }
 
-func (a *Adaptor) CreateWgPeer(c context.Context, wgPeer WireGuardPeer) (*WireGuardPeer, error) {
+func (s *ServerAdaptor) CreateWgPeer(c context.Context, wgPeer WireGuardPeer) (*WireGuardPeer, error) {
 	var createdPeer WireGuardPeer
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Put(
 		c,
@@ -91,10 +91,10 @@ func (a *Adaptor) CreateWgPeer(c context.Context, wgPeer WireGuardPeer) (*WireGu
 	return &createdPeer, nil
 }
 
-func (a *Adaptor) UpdateWgPeer(c context.Context, peerID string, wgPeer WireGuardPeer) (*WireGuardPeer, error) {
+func (s *ServerAdaptor) UpdateWgPeer(c context.Context, peerID string, wgPeer WireGuardPeer) (*WireGuardPeer, error) {
 	var updatedPeer WireGuardPeer
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Patch(
 		c,
@@ -109,8 +109,8 @@ func (a *Adaptor) UpdateWgPeer(c context.Context, peerID string, wgPeer WireGuar
 	return &updatedPeer, nil
 }
 
-func (a *Adaptor) DeleteWgPeer(c context.Context, peerID string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) DeleteWgPeer(c context.Context, peerID string) error {
+	httpClient := s.client()
 
 	err := httpClient.Delete(
 		c,
@@ -118,7 +118,7 @@ func (a *Adaptor) DeleteWgPeer(c context.Context, peerID string) error {
 		nil,
 	)
 	if err != nil {
-		a.logger.Error("failed to delete wireguard peer", zap.Error(err))
+		s.adaptor.logger.Error("failed to delete wireguard peer", zap.Error(err))
 		return err
 	}
 

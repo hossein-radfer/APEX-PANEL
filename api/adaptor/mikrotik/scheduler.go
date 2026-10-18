@@ -18,10 +18,10 @@ type Scheduler struct {
 	OnEvent   *string `json:"on-event,omitempty"`
 }
 
-func (a *Adaptor) CreateScheduler(c context.Context, scheduler Scheduler) (*Scheduler, error) {
+func (s *ServerAdaptor) CreateScheduler(c context.Context, scheduler Scheduler) (*Scheduler, error) {
 	var createdScheduler Scheduler
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Put(
 		c,
@@ -36,10 +36,10 @@ func (a *Adaptor) CreateScheduler(c context.Context, scheduler Scheduler) (*Sche
 	return &createdScheduler, nil
 }
 
-func (a *Adaptor) UpdateScheduler(c context.Context, schedulerID string, scheduler Scheduler) (*Scheduler, error) {
+func (s *ServerAdaptor) UpdateScheduler(c context.Context, schedulerID string, scheduler Scheduler) (*Scheduler, error) {
 	var updatedScheduler Scheduler
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Patch(
 		c,
@@ -54,8 +54,8 @@ func (a *Adaptor) UpdateScheduler(c context.Context, schedulerID string, schedul
 	return &updatedScheduler, nil
 }
 
-func (a *Adaptor) DeleteScheduler(c context.Context, schedulerID string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) DeleteScheduler(c context.Context, schedulerID string) error {
+	httpClient := s.client()
 
 	err := httpClient.Delete(
 		c,

@@ -35,9 +35,16 @@ export default function DeviceInfo({ stats }: Props) {
   return (
     <Card className='col-span-1 lg:col-span-3'>
       <CardContent>
-        <h2 className='text-foreground mb-4 text-lg font-semibold'>
-          آمار میکروتیک
-        </h2>
+        <div className='mb-4 flex items-center justify-between'>
+          <h2 className='text-foreground text-lg font-semibold'>
+            آمار میکروتیک
+          </h2>
+          {stats?.device_server_name && (
+            <span className='text-muted-foreground text-xs'>
+              {stats.device_server_name}
+            </span>
+          )}
+        </div>
         <div>
           {items.map(({ label, value, badge, badgeStyle }, idx) => (
             <div

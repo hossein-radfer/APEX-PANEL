@@ -6,20 +6,30 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 
 	"github.com/maahdima/mwp/api/http/schema"
 	"github.com/maahdima/mwp/api/service"
 )
 
+// SyncController's actions all operate panel-wide, across every registered
+// server, not one at a time -- there is no per-server picker on the sync
+// preview/manual-sync page yet. Each action builds one service.SyncService
+// per server via syncServiceFactory and runs it independently, so a
+// problem on one server's sync never blocks another's (see
+// service.SyncPeersAllServers and its siblings for the shared
+// "one dead source never blocks the rest" convention this follows).
 type SyncController struct {
-	syncService *service.SyncService
-	logger      *zap.Logger
+	db                 *gorm.DB
+	syncServiceFactory service.SyncServiceFactory
+	logger             *zap.Logger
 }
 
-func NewSyncController(syncService *service.SyncService) *SyncController {
+func NewSyncController(db *gorm.DB, syncServiceFactory service.SyncServiceFactory) *SyncController {
 	return &SyncController{
-		syncService: syncService,
-		logger:      zap.L().Named("SyncController"),
+		db:                 db,
+		syncServiceFactory: syncServiceFactory,
+		logger:             zap.L().Named("SyncController"),
 	}
 }
 
@@ -28,7 +38,7 @@ func (c *SyncController) GetSyncInterfaces(ctx echo.Context) error {
 		return err
 	}
 
-	ifaces, err := c.syncService.GetSyncInterfaces()
+	ifaces, err := service.GetSyncInterfacesAllServers(c.db, c.syncServiceFactory)
 	if err != nil {
 		c.logger.Error("failed to fetch sync interfaces", zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{StatusCode: http.StatusInternalServerError, Status: "error", Message: "failed to fetch interfaces for sync: " + err.Error()})
@@ -43,7 +53,7 @@ func (c *SyncController) GetSyncPeers(ctx echo.Context) error {
 	}
 
 	interfaceName := strings.TrimSpace(ctx.QueryParam("interface"))
-	peers, err := c.syncService.GetSyncPeers(interfaceName)
+	peers, err := service.GetSyncPeersAllServers(c.db, c.syncServiceFactory, interfaceName)
 	if err != nil {
 		c.logger.Error("failed to fetch sync peers", zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{StatusCode: http.StatusInternalServerError, Status: "error", Message: "failed to fetch peers for sync: " + err.Error()})
@@ -61,7 +71,10 @@ func (c *SyncController) SyncSelectedInterfaces(ctx echo.Context) error {
 	if err := ctx.Bind(&req); err != nil {
 		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
 	}
-	if err := c.syncService.SyncSelectedInterfaces(req.InterfaceIDs); err != nil {
+	if err := ctx.Validate(&req); err != nil {
+		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
+	}
+	if err := service.SyncSelectedInterfacesForServer(c.syncServiceFactory, req.ServerID, req.InterfaceIDs); err != nil {
 		c.logger.Error("failed to sync selected interfaces", zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{StatusCode: http.StatusInternalServerError, Status: "error", Message: "failed to sync selected interfaces: " + err.Error()})
 	}
@@ -77,7 +90,10 @@ func (c *SyncController) SyncSelectedPeers(ctx echo.Context) error {
 	if err := ctx.Bind(&req); err != nil {
 		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
 	}
-	if err := c.syncService.SyncSelectedPeers(req.PeerIDs); err != nil {
+	if err := ctx.Validate(&req); err != nil {
+		return ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
+	}
+	if err := service.SyncSelectedPeersForServer(c.syncServiceFactory, req.ServerID, req.PeerIDs); err != nil {
 		c.logger.Error("failed to sync selected peers", zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{StatusCode: http.StatusInternalServerError, Status: "error", Message: "failed to sync selected peers: " + err.Error()})
 	}
@@ -89,7 +105,7 @@ func (c *SyncController) SyncPeers(ctx echo.Context) error {
 		return err
 	}
 
-	if err := c.syncService.SyncPeers(); err != nil {
+	if err := service.SyncPeersAllServers(c.db, c.syncServiceFactory); err != nil {
 		c.logger.Error("failed to sync peers", zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{
 			StatusCode: http.StatusInternalServerError,
@@ -106,7 +122,7 @@ func (c *SyncController) SyncInterfaces(ctx echo.Context) error {
 		return err
 	}
 
-	if err := c.syncService.SyncInterfaces(); err != nil {
+	if err := service.SyncInterfacesAllServers(c.db, c.syncServiceFactory); err != nil {
 		c.logger.Error("failed to sync interfaces", zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{
 			StatusCode: http.StatusInternalServerError,

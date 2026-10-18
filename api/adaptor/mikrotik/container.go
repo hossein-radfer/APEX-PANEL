@@ -20,23 +20,21 @@ type Container struct {
 	RootDir string `json:"root-dir,omitempty"`
 }
 
-// FetchAllContainers lists every RouterOS container on the given server --
-// serverName is forwarded straight to MwpClients.GetClient rather than
-// passed as nil (the convention every OTHER adaptor method in this package
-// currently follows), because a stopped-container diagnosis is only
-// meaningful against the SPECIFIC router an XuiPanel is mapped to
-// (XuiPanel.ContainerServerID) -- silently querying "whichever client the
-// map happens to return first" (GetClient(nil)'s own documented behavior)
-// would misreport a panel's container status whenever more than one
-// RouterOS server is registered. See TunnelGraphService.Discover's own doc
-// comment for this exact pre-existing multi-router limitation elsewhere in
-// this codebase; this method deliberately does not repeat it.
-func (a *Adaptor) FetchAllContainers(c context.Context, serverName string) ([]Container, error) {
+// FetchAllContainers lists every RouterOS container on this ServerAdaptor's
+// own server -- this was historically the one place in this package that
+// already took an explicit server identifier (serverName) rather than
+// relying on GetClient(nil)'s "whichever client the map returns first"
+// fallback, since a stopped-container diagnosis is only ever meaningful
+// against the SPECIFIC router an XuiPanel is mapped to
+// (XuiPanel.ContainerServerID). Now that every adaptor method in this
+// package goes through ServerAdaptor the same way, this is no longer a
+// special case -- see Adaptor.ForServer's own doc comment.
+func (s *ServerAdaptor) FetchAllContainers(c context.Context) ([]Container, error) {
 	var containers []Container
 
-	httpClient := a.mwpClients.GetClient(&serverName)
+	httpClient := s.client()
 	if httpClient == nil {
-		return nil, fmt.Errorf("no mikrotik client configured for server %q", serverName)
+		return nil, fmt.Errorf("no mikrotik client configured for server id %d", s.serverID)
 	}
 
 	err := httpClient.Get(
@@ -52,14 +50,14 @@ func (a *Adaptor) FetchAllContainers(c context.Context, serverName string) ([]Co
 }
 
 // FetchContainerByName finds a single container by its RouterOS-assigned
-// Name on the given server -- used by the panel-container health check
-// (V2RayPanelHealthService) to answer "is THIS specific container, the one
-// mapped to this XuiPanel, actually running right now." Returns an error
-// if the container isn't found (a container renamed/removed on the router
-// outside this panel's knowledge is a real, reportable misconfiguration,
-// not a silent no-op).
-func (a *Adaptor) FetchContainerByName(c context.Context, serverName, containerName string) (*Container, error) {
-	containers, err := a.FetchAllContainers(c, serverName)
+// Name on this ServerAdaptor's own server -- used by the panel-container
+// health check (V2RayPanelHealthService) to answer "is THIS specific
+// container, the one mapped to this XuiPanel, actually running right now."
+// Returns an error if the container isn't found (a container renamed/
+// removed on the router outside this panel's knowledge is a real,
+// reportable misconfiguration, not a silent no-op).
+func (s *ServerAdaptor) FetchContainerByName(c context.Context, containerName string) (*Container, error) {
+	containers, err := s.FetchAllContainers(c)
 	if err != nil {
 		return nil, err
 	}
@@ -70,5 +68,5 @@ func (a *Adaptor) FetchContainerByName(c context.Context, serverName, containerN
 		}
 	}
 
-	return nil, fmt.Errorf("container %q not found on server %q", containerName, serverName)
+	return nil, fmt.Errorf("container %q not found on server id %d", containerName, s.serverID)
 }

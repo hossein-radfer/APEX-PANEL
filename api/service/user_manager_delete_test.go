@@ -74,13 +74,16 @@ func openUserManagerDeleteTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// newTestUserManagerServiceWithFakeDeleteRouter registers the fake
+// router's client under server ID 0 -- see newTestUserManagerServiceWithFakeRouter's
+// own doc comment (user_manager_reset_usage_test.go) for why.
 func newTestUserManagerServiceWithFakeDeleteRouter(t *testing.T, db *gorm.DB, srv *httptest.Server) *UserManagerService {
 	t.Helper()
 	mwpClients := common.NewMwpClients(db)
 	isSSL := false
 	addr := srv.Listener.Addr().String()
 	host, port := addr[:len(addr)-len(":")-len(portOf(addr))], portOf(addr)
-	mwpClients.SetClient(&schema.CreateServerRequest{
+	mwpClients.SetClient(uint(0), &schema.CreateServerRequest{
 		Name:      "test-server",
 		IPAddress: host,
 		APIPort:   port,

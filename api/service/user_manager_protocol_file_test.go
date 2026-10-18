@@ -31,6 +31,11 @@ func newTestUserManagerProtocolFile(t *testing.T) (*UserManagerProtocolFile, *go
 	return NewUserManagerProtocolFile(db), db
 }
 
+const (
+	testServerA uint = 1
+	testServerB uint = 2
+)
+
 // TestUploadFile_PreservesOriginalExtension is a regression guard for a
 // confirmed, reported bug report's adjacent claim: uploaded protocol files
 // must keep whatever extension the admin originally uploaded (.exe, .apk,
@@ -38,11 +43,11 @@ func newTestUserManagerProtocolFile(t *testing.T) (*UserManagerProtocolFile, *go
 func TestUploadFile_PreservesOriginalExtension(t *testing.T) {
 	f, _ := newTestUserManagerProtocolFile(t)
 
-	if err := f.UploadFile(model.ProtocolOpenVPN, ProtocolFileKindClientApp, "MyVpnClient.exe", []byte("fake-binary")); err != nil {
+	if err := f.UploadFile(model.ProtocolOpenVPN, testServerA, ProtocolFileKindClientApp, "MyVpnClient.exe", []byte("fake-binary")); err != nil {
 		t.Fatalf("upload failed: %v", err)
 	}
 
-	path, err := f.GetFilePath(model.ProtocolOpenVPN, ProtocolFileKindClientApp)
+	path, err := f.GetFilePath(model.ProtocolOpenVPN, testServerA, ProtocolFileKindClientApp)
 	if err != nil {
 		t.Fatalf("failed to get file path: %v", err)
 	}
@@ -57,15 +62,15 @@ func TestUploadFile_PreservesOriginalExtension(t *testing.T) {
 func TestUploadFile_ReplacingWithDifferentExtensionRemovesOldFile(t *testing.T) {
 	f, _ := newTestUserManagerProtocolFile(t)
 
-	if err := f.UploadFile(model.ProtocolSSTP, ProtocolFileKindClientApp, "old.exe", []byte("old")); err != nil {
+	if err := f.UploadFile(model.ProtocolSSTP, testServerA, ProtocolFileKindClientApp, "old.exe", []byte("old")); err != nil {
 		t.Fatalf("first upload failed: %v", err)
 	}
-	firstPath, err := f.GetFilePath(model.ProtocolSSTP, ProtocolFileKindClientApp)
+	firstPath, err := f.GetFilePath(model.ProtocolSSTP, testServerA, ProtocolFileKindClientApp)
 	if err != nil {
 		t.Fatalf("failed to get first file path: %v", err)
 	}
 
-	if err := f.UploadFile(model.ProtocolSSTP, ProtocolFileKindClientApp, "new.apk", []byte("new")); err != nil {
+	if err := f.UploadFile(model.ProtocolSSTP, testServerA, ProtocolFileKindClientApp, "new.apk", []byte("new")); err != nil {
 		t.Fatalf("second upload failed: %v", err)
 	}
 
@@ -73,7 +78,7 @@ func TestUploadFile_ReplacingWithDifferentExtensionRemovesOldFile(t *testing.T) 
 		t.Fatalf("expected the old .exe file to be removed after re-upload with a new extension, stat err=%v", err)
 	}
 
-	secondPath, err := f.GetFilePath(model.ProtocolSSTP, ProtocolFileKindClientApp)
+	secondPath, err := f.GetFilePath(model.ProtocolSSTP, testServerA, ProtocolFileKindClientApp)
 	if err != nil {
 		t.Fatalf("failed to get second file path: %v", err)
 	}
@@ -93,16 +98,16 @@ func TestUploadFile_ReplacingWithDifferentExtensionRemovesOldFile(t *testing.T) 
 func TestDeleteFile_RemovesFileAndClearsFlag(t *testing.T) {
 	f, db := newTestUserManagerProtocolFile(t)
 
-	if err := f.UploadFile(model.ProtocolL2TP, ProtocolFileKindCertificate, "cert.pem", []byte("cert-bytes")); err != nil {
+	if err := f.UploadFile(model.ProtocolL2TP, testServerA, ProtocolFileKindCertificate, "cert.pem", []byte("cert-bytes")); err != nil {
 		t.Fatalf("upload failed: %v", err)
 	}
 
-	path, err := f.GetFilePath(model.ProtocolL2TP, ProtocolFileKindCertificate)
+	path, err := f.GetFilePath(model.ProtocolL2TP, testServerA, ProtocolFileKindCertificate)
 	if err != nil {
 		t.Fatalf("expected file to exist before delete: %v", err)
 	}
 
-	if err := f.DeleteFile(model.ProtocolL2TP, ProtocolFileKindCertificate); err != nil {
+	if err := f.DeleteFile(model.ProtocolL2TP, testServerA, ProtocolFileKindCertificate); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
 
@@ -110,12 +115,12 @@ func TestDeleteFile_RemovesFileAndClearsFlag(t *testing.T) {
 		t.Fatalf("expected the file to be removed from disk, stat err=%v", err)
 	}
 
-	if _, err := f.GetFilePath(model.ProtocolL2TP, ProtocolFileKindCertificate); err == nil {
+	if _, err := f.GetFilePath(model.ProtocolL2TP, testServerA, ProtocolFileKindCertificate); err == nil {
 		t.Fatal("expected GetFilePath to fail after delete")
 	}
 
 	var cfg model.UserManagerProtocolConfig
-	if err := db.Where("protocol = ?", model.ProtocolL2TP).First(&cfg).Error; err != nil {
+	if err := db.Where("protocol = ? AND server_id = ?", model.ProtocolL2TP, testServerA).First(&cfg).Error; err != nil {
 		t.Fatalf("failed to reload config row: %v", err)
 	}
 	if cfg.HasCertificateFile {
@@ -129,7 +134,7 @@ func TestDeleteFile_RemovesFileAndClearsFlag(t *testing.T) {
 func TestDeleteFile_NonExistentFileReturnsError(t *testing.T) {
 	f, _ := newTestUserManagerProtocolFile(t)
 
-	if err := f.DeleteFile(model.ProtocolPPTP, ProtocolFileKindClientApp); err == nil {
+	if err := f.DeleteFile(model.ProtocolPPTP, testServerA, ProtocolFileKindClientApp); err == nil {
 		t.Fatal("expected an error deleting a file that was never uploaded")
 	}
 }
@@ -140,21 +145,84 @@ func TestDeleteFile_NonExistentFileReturnsError(t *testing.T) {
 func TestDeleteFile_OnlyAffectsItsOwnKind(t *testing.T) {
 	f, _ := newTestUserManagerProtocolFile(t)
 
-	if err := f.UploadFile(model.ProtocolIKEv2, ProtocolFileKindCertificate, "cert.pem", []byte("cert")); err != nil {
+	if err := f.UploadFile(model.ProtocolIKEv2, testServerA, ProtocolFileKindCertificate, "cert.pem", []byte("cert")); err != nil {
 		t.Fatalf("certificate upload failed: %v", err)
 	}
-	if err := f.UploadFile(model.ProtocolIKEv2, ProtocolFileKindClientApp, "app.exe", []byte("app")); err != nil {
+	if err := f.UploadFile(model.ProtocolIKEv2, testServerA, ProtocolFileKindClientApp, "app.exe", []byte("app")); err != nil {
 		t.Fatalf("client-app upload failed: %v", err)
 	}
 
-	if err := f.DeleteFile(model.ProtocolIKEv2, ProtocolFileKindCertificate); err != nil {
+	if err := f.DeleteFile(model.ProtocolIKEv2, testServerA, ProtocolFileKindCertificate); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
 
-	if _, err := f.GetFilePath(model.ProtocolIKEv2, ProtocolFileKindCertificate); err == nil {
+	if _, err := f.GetFilePath(model.ProtocolIKEv2, testServerA, ProtocolFileKindCertificate); err == nil {
 		t.Fatal("expected the certificate file to be gone")
 	}
-	if _, err := f.GetFilePath(model.ProtocolIKEv2, ProtocolFileKindClientApp); err != nil {
+	if _, err := f.GetFilePath(model.ProtocolIKEv2, testServerA, ProtocolFileKindClientApp); err != nil {
 		t.Fatalf("expected the client-app file to still exist, got error: %v", err)
+	}
+}
+
+// TestUploadFile_IsolatedPerServer is a regression guard for the confirmed,
+// reported multi-server bug this file's whole serverID parameter exists to
+// fix: the same protocol configured on two different servers must each
+// keep their own independent certificate/client-app file -- uploading or
+// deleting one server's file must never affect the other server's file for
+// the exact same protocol+kind.
+func TestUploadFile_IsolatedPerServer(t *testing.T) {
+	f, db := newTestUserManagerProtocolFile(t)
+
+	if err := f.UploadFile(model.ProtocolOpenVPN, testServerA, ProtocolFileKindCertificate, "cert-a.pem", []byte("server-a-cert")); err != nil {
+		t.Fatalf("server A upload failed: %v", err)
+	}
+	if err := f.UploadFile(model.ProtocolOpenVPN, testServerB, ProtocolFileKindCertificate, "cert-b.pem", []byte("server-b-cert")); err != nil {
+		t.Fatalf("server B upload failed: %v", err)
+	}
+
+	pathA, err := f.GetFilePath(model.ProtocolOpenVPN, testServerA, ProtocolFileKindCertificate)
+	if err != nil {
+		t.Fatalf("failed to get server A file path: %v", err)
+	}
+	pathB, err := f.GetFilePath(model.ProtocolOpenVPN, testServerB, ProtocolFileKindCertificate)
+	if err != nil {
+		t.Fatalf("failed to get server B file path: %v", err)
+	}
+	if pathA == pathB {
+		t.Fatalf("expected server A and B to have distinct on-disk paths, both resolved to %q", pathA)
+	}
+
+	contentA, err := os.ReadFile(pathA)
+	if err != nil {
+		t.Fatalf("failed to read server A file: %v", err)
+	}
+	if string(contentA) != "server-a-cert" {
+		t.Fatalf("expected server A's own content, got %q", string(contentA))
+	}
+
+	// Deleting server A's file must leave server B's file (same protocol,
+	// same kind, different server) completely untouched.
+	if err := f.DeleteFile(model.ProtocolOpenVPN, testServerA, ProtocolFileKindCertificate); err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	if _, err := f.GetFilePath(model.ProtocolOpenVPN, testServerA, ProtocolFileKindCertificate); err == nil {
+		t.Fatal("expected server A's file to be gone after its own delete")
+	}
+	if _, err := f.GetFilePath(model.ProtocolOpenVPN, testServerB, ProtocolFileKindCertificate); err != nil {
+		t.Fatalf("expected server B's file to be unaffected by server A's delete, got error: %v", err)
+	}
+
+	var cfgA, cfgB model.UserManagerProtocolConfig
+	if err := db.Where("protocol = ? AND server_id = ?", model.ProtocolOpenVPN, testServerA).First(&cfgA).Error; err != nil {
+		t.Fatalf("failed to reload server A config row: %v", err)
+	}
+	if cfgA.HasCertificateFile {
+		t.Fatal("expected server A's HasCertificateFile to be false after delete")
+	}
+	if err := db.Where("protocol = ? AND server_id = ?", model.ProtocolOpenVPN, testServerB).First(&cfgB).Error; err != nil {
+		t.Fatalf("failed to reload server B config row: %v", err)
+	}
+	if !cfgB.HasCertificateFile {
+		t.Fatal("expected server B's HasCertificateFile to remain true after server A's delete")
 	}
 }

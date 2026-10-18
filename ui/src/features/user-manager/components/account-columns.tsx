@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button.tsx'
 import { Switch } from '@/components/ui/switch.tsx'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import LongText from '@/components/long-text'
+import { ServerBadge } from '@/features/shared-components/server-badge.tsx'
 import { AccountTableRowActions } from '@/features/user-manager/components/account-table-row-actions.tsx'
 import { ColoredBadge } from '@/features/shared-components/status-badge.tsx'
 import { SimpleDialog } from '@/features/shared-components/table/dialogs/simple-dialog.tsx'
@@ -69,16 +70,27 @@ export const accountColumns: ColumnDef<UserManagerAccount>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='نام کاربری' />
     ),
-    cell: ({ row }) => {
-      const { username, is_online } = row.original
+    cell: ({ row, table }) => {
+      const { username, is_online, server_id, server_name } = row.original
+      // The server badge is only shown once the loaded rows actually span
+      // more than one server -- matches InterfacesColumns/PeersColumns'
+      // identical convention.
+      const allRows = table.getCoreRowModel().rows.map((r) => r.original)
+      const showServerBadge =
+        new Set(allRows.map((r) => r.server_id)).size > 1
       return (
-        <div className='flex w-fit items-center gap-3 text-nowrap'>
-          {is_online ? (
-            <OnlineBadge peerName={username} />
-          ) : (
-            <OfflineBadge peerName={username} />
+        <div className='flex w-fit flex-col gap-0.5 text-nowrap'>
+          <div className='flex items-center gap-3'>
+            {is_online ? (
+              <OnlineBadge peerName={username} />
+            ) : (
+              <OfflineBadge peerName={username} />
+            )}
+            {username}
+          </div>
+          {showServerBadge && (
+            <ServerBadge serverId={server_id} serverName={server_name} />
           )}
-          {username}
         </div>
       )
     },

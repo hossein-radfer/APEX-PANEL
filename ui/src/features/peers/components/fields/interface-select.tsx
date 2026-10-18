@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { serverBadgeColorClass } from '@/lib/server-badge-colors.ts'
 
 interface Props {
   name: 'interface_id'
@@ -37,6 +38,13 @@ export function InterfaceSelect({
   isLoading,
   error,
 }: Props) {
+  // Only show the per-server badge/color once there's actually more than
+  // one server among the candidates -- in the common single-server case
+  // (today's only real deployment) every interface already implicitly
+  // belongs to the same server, so the dot would be pure visual noise.
+  const distinctServerCount = new Set(options.map((opt) => opt.server_id)).size
+  const showServerBadge = distinctServerCount > 1
+
   return (
     <FormField
       control={control}
@@ -77,7 +85,20 @@ export function InterfaceSelect({
                   ) : (
                     options.map((item) => (
                       <SelectItem key={item.id} value={item.id.toString()}>
-                        {item.name}
+                        {showServerBadge ? (
+                          <span className='inline-flex items-center gap-1.5'>
+                            <span
+                              className={`inline-block size-2 shrink-0 rounded-full ${serverBadgeColorClass(item.server_id)}`}
+                              aria-hidden='true'
+                            />
+                            {item.name}
+                            <span className='text-muted-foreground text-xs'>
+                              ({item.server_name})
+                            </span>
+                          </span>
+                        ) : (
+                          item.name
+                        )}
                       </SelectItem>
                     ))
                   )}

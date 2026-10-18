@@ -3,6 +3,7 @@ package http
 import (
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/maahdima/mwp/api/dataservice/model"
 	"github.com/maahdima/mwp/api/http/schema"
@@ -31,9 +32,12 @@ func NewUserManagerProtocolConfigController(accountService *service.UserManagerS
 
 // ListProtocolConfigs is readable by any authenticated role (admin or
 // reseller), needed so the account-creation UI/share links can display the
-// configured port.
+// configured port. An optional "server_id" query param scopes the list to
+// one server; omitted, every server's rows are returned (denormalized with
+// server_name) so the settings page can show every server's configuration
+// at once.
 func (c *UserManagerProtocolConfigController) ListProtocolConfigs(ctx echo.Context) error {
-	configs, err := c.accountService.GetProtocolConfigs()
+	configs, err := c.accountService.GetProtocolConfigs(parseOptionalServerIDParam(ctx))
 	if err != nil {
 		c.logger.Error("failed to list user manager protocol configs", zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{
@@ -93,6 +97,20 @@ func validateProtocolParam(ctx echo.Context) (model.UserManagerAccountProtocol, 
 	}
 }
 
+// validateProtocolFileServerIDParam parses the required ":serverID" path
+// param on every protocol-file route -- unlike the config row's own
+// optional server_id query param (which can fall back to this install's
+// one server), a file is physically stored per-server with no sensible
+// single-server fallback to guess once an admin manages more than one, so
+// the caller must always say which server's file it means.
+func validateProtocolFileServerIDParam(ctx echo.Context) (uint, error) {
+	parsed, err := strconv.ParseUint(ctx.Param("serverID"), 10, 64)
+	if err != nil {
+		return 0, ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
+	}
+	return uint(parsed), nil
+}
+
 // UploadProtocolCertificateFile stores an admin-supplied reference/quality
 // file (e.g. a certificate export) for a protocol. Admin only.
 func (c *UserManagerProtocolConfigController) UploadProtocolCertificateFile(ctx echo.Context) error {
@@ -112,6 +130,10 @@ func (c *UserManagerProtocolConfigController) uploadProtocolFile(ctx echo.Contex
 	}
 
 	protocol, err := validateProtocolParam(ctx)
+	if err != nil {
+		return err
+	}
+	serverID, err := validateProtocolFileServerIDParam(ctx)
 	if err != nil {
 		return err
 	}
@@ -149,8 +171,8 @@ func (c *UserManagerProtocolConfigController) uploadProtocolFile(ctx echo.Contex
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
-	if err := c.protocolFile.UploadFile(protocol, kind, fileHeader.Filename, content); err != nil {
-		c.logger.Error("failed to upload protocol file", zap.String("protocol", string(protocol)), zap.String("kind", string(kind)), zap.Error(err))
+	if err := c.protocolFile.UploadFile(protocol, serverID, kind, fileHeader.Filename, content); err != nil {
+		c.logger.Error("failed to upload protocol file", zap.String("protocol", string(protocol)), zap.Uint("server_id", serverID), zap.String("kind", string(kind)), zap.Error(err))
 		return ctx.JSON(http.StatusInternalServerError, schema.ErrorResponse{
 			StatusCode: http.StatusInternalServerError,
 			Status:     "error",
@@ -178,8 +200,12 @@ func (c *UserManagerProtocolConfigController) downloadProtocolFile(ctx echo.Cont
 	if err != nil {
 		return err
 	}
+	serverID, err := validateProtocolFileServerIDParam(ctx)
+	if err != nil {
+		return err
+	}
 
-	path, err := c.protocolFile.GetFilePath(protocol, kind)
+	path, err := c.protocolFile.GetFilePath(protocol, serverID, kind)
 	if err != nil {
 		return ctx.JSON(http.StatusNotFound, schema.ErrorResponse{
 			StatusCode: http.StatusNotFound,
@@ -212,9 +238,13 @@ func (c *UserManagerProtocolConfigController) deleteProtocolFile(ctx echo.Contex
 	if err != nil {
 		return err
 	}
+	serverID, err := validateProtocolFileServerIDParam(ctx)
+	if err != nil {
+		return err
+	}
 
-	if err := c.protocolFile.DeleteFile(protocol, kind); err != nil {
-		c.logger.Error("failed to delete protocol file", zap.String("protocol", string(protocol)), zap.String("kind", string(kind)), zap.Error(err))
+	if err := c.protocolFile.DeleteFile(protocol, serverID, kind); err != nil {
+		c.logger.Error("failed to delete protocol file", zap.String("protocol", string(protocol)), zap.Uint("server_id", serverID), zap.String("kind", string(kind)), zap.Error(err))
 		return ctx.JSON(http.StatusNotFound, schema.ErrorResponse{
 			StatusCode: http.StatusNotFound,
 			Status:     "error",

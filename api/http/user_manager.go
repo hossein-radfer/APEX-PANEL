@@ -715,6 +715,23 @@ func (c *UserManagerAccountController) UploadAccountConfigForReseller(ctx echo.C
 // well under this), but still a guard against a runaway/malicious upload.
 const bulkImportMaxUploadSize = 5 << 20 // 5 MiB
 
+// parseOptionalServerIDFormValue reads an optional "server_id" multipart
+// form value -- nil (not present / not a valid uint) lets the service fall
+// back to this install's one server, mirroring parseOptionalServerIDParam's
+// identical query-param convention for GET endpoints.
+func parseOptionalServerIDFormValue(ctx echo.Context) *uint {
+	raw := ctx.FormValue("server_id")
+	if raw == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return nil
+	}
+	id := uint(parsed)
+	return &id
+}
+
 // BulkImportAccounts syncs already-existing RouterOS User Manager accounts
 // (created by an external script) into the panel's database from an
 // uploaded TXT/CSV file -- see UserManagerService.BulkImportAccounts's doc
@@ -754,7 +771,7 @@ func (c *UserManagerAccountController) BulkImportAccounts(ctx echo.Context) erro
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
-	result, err := c.accountService.BulkImportAccounts(string(content), resellerID)
+	result, err := c.accountService.BulkImportAccounts(string(content), resellerID, parseOptionalServerIDFormValue(ctx))
 	if err != nil {
 		c.logger.Error("bulk import failed", zap.Error(err))
 		return ctx.JSON(http.StatusBadRequest, schema.ErrorResponse{
@@ -807,7 +824,7 @@ func (c *UserManagerAccountController) BulkImportAccountsForReseller(ctx echo.Co
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
-	result, err := c.accountService.BulkImportAccounts(string(content), &resellerID)
+	result, err := c.accountService.BulkImportAccounts(string(content), &resellerID, parseOptionalServerIDFormValue(ctx))
 	if err != nil {
 		c.logger.Error("bulk import for reseller failed", zap.Error(err))
 		return ctx.JSON(http.StatusBadRequest, schema.ErrorResponse{

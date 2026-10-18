@@ -52,6 +52,13 @@ type Reseller struct {
 	UserManagerUsedBytes   int64  `gorm:"type:bigint;not null;default:0"`
 	UserManagerMaxAccounts *int   `gorm:"type:int"` // nil means unlimited number of accounts
 
+	// UserManagerQuotaWarningSent mirrors QuotaWarningSent above, but for
+	// this separate User Manager quota pool -- latches once a low-quota
+	// (<=10% remaining) warning has been sent for the current quota period,
+	// cleared when the admin raises UserManagerQuotaBytes enough to give
+	// >10% headroom again (see Reseller.UpdateReseller).
+	UserManagerQuotaWarningSent bool `gorm:"not null;default:false"`
+
 	// UserManagerDeletedUsageBytes is a confirmed, reported bug's fix: since
 	// UserManagerUsedBytes is a LIVE SUM recomputed every tick over
 	// currently-existing UserManagerAccount rows (see
@@ -80,6 +87,10 @@ type Reseller struct {
 	V2RayUsedBytes   int64  `gorm:"type:bigint;not null;default:0"`
 	V2RayMaxPackages *int   `gorm:"type:int"` // nil means unlimited number of packages
 
+	// V2RayQuotaWarningSent mirrors QuotaWarningSent/UserManagerQuotaWarningSent
+	// above, for the V2Ray quota pool.
+	V2RayQuotaWarningSent bool `gorm:"not null;default:false"`
+
 	// V2RayDeletedUsageBytes mirrors UserManagerDeletedUsageBytes above --
 	// same confirmed bug (usage disappearing from the reseller's total when
 	// its owning package/location is deleted), same fix (fold the deleted
@@ -101,6 +112,10 @@ type Reseller struct {
 	DNSQuotaBytes  *int64 `gorm:"type:bigint"` // nil means unlimited
 	DNSUsedBytes   int64  `gorm:"type:bigint;not null;default:0"`
 	DNSMaxAccounts *int   `gorm:"type:int"` // nil means unlimited number of accounts
+
+	// DNSQuotaWarningSent mirrors QuotaWarningSent/UserManagerQuotaWarningSent/
+	// V2RayQuotaWarningSent above, for the DNS quota pool.
+	DNSQuotaWarningSent bool `gorm:"not null;default:false"`
 
 	// DNSDeletedUsageBytes mirrors V2RayDeletedUsageBytes/
 	// UserManagerDeletedUsageBytes -- preserves a deleted DNSAccount's

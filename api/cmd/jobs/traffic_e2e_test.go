@@ -11,6 +11,14 @@ import (
 // fakeAdaptor implements minimal methods used by Calculator in tests
 type fakeAdaptor struct{}
 
+// ForServer satisfies MikrotikAdaptorFactory -- this fake is single-server
+// only (it has no concept of per-server state), so every server ID
+// resolves to the same shared fake behavior, matching how this fake was
+// used before Calculator threaded ServerID through its RouterOS calls.
+func (f *fakeAdaptor) ForServer(serverID uint) MikrotikAdaptor {
+	return f
+}
+
 func (f *fakeAdaptor) FetchWgPeer(ctx context.Context, peerID string) (*mikrotik.WireGuardPeer, error) {
 	// Return a peer with large TransferTx to simulate traffic
 	wg := &mikrotik.WireGuardPeer{

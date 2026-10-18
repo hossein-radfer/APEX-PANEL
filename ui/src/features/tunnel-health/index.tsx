@@ -1,9 +1,18 @@
+import { useEffect, useState } from 'react'
+import { useServersListQuery } from '@/hooks/servers/useServersListQuery.ts'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ThemeSwitch } from '@/components/theme-switch'
 import { ActionsTab } from './components/actions-tab'
 import { AnalysisTab } from './components/analysis-tab'
 import { EventsTab } from './components/events-tab'
@@ -15,6 +24,39 @@ import { StatusesTab } from './components/statuses-tab'
 import { UserManagerProtocolsTab } from './components/user-manager-protocols-tab'
 
 export default function TunnelHealth() {
+  // Tunnel health is admin-only (same forbidUnlessAdmin gate as the rest
+  // of this controller), so -- unlike User Manager's groups/profiles --
+  // there's no reseller-scoped variant to special-case here: one shared
+  // picker for every tab that needs a server, same pattern as
+  // features/user-manager/index.tsx's own selectedServerId.
+  const { data: serversList = [] } = useServersListQuery()
+  const [selectedServerId, setSelectedServerId] = useState<
+    number | undefined
+  >(undefined)
+  useEffect(() => {
+    if (selectedServerId === undefined && serversList.length >= 1) {
+      setSelectedServerId(serversList[0].id)
+    }
+  }, [selectedServerId, serversList])
+
+  const serverPicker = serversList.length > 1 && (
+    <Select
+      value={selectedServerId ? String(selectedServerId) : undefined}
+      onValueChange={(value) => setSelectedServerId(Number(value))}
+    >
+      <SelectTrigger className='w-full md:w-80'>
+        <SelectValue placeholder='یک سرور انتخاب کنید' />
+      </SelectTrigger>
+      <SelectContent>
+        {serversList.map((server) => (
+          <SelectItem key={server.id} value={String(server.id)}>
+            {server.name} ({server.ip_address})
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+
   return (
     <>
       <Header fixed>
@@ -58,26 +100,32 @@ export default function TunnelHealth() {
             </TabsList>
           </div>
 
-          <TabsContent value='statuses'>
-            <StatusesTab />
+          <TabsContent value='statuses' className='space-y-3'>
+            {serverPicker}
+            <StatusesTab serverId={selectedServerId} />
           </TabsContent>
-          <TabsContent value='events'>
-            <EventsTab />
+          <TabsContent value='events' className='space-y-3'>
+            {serverPicker}
+            <EventsTab serverId={selectedServerId} />
           </TabsContent>
-          <TabsContent value='actions'>
-            <ActionsTab />
+          <TabsContent value='actions' className='space-y-3'>
+            {serverPicker}
+            <ActionsTab serverId={selectedServerId} />
           </TabsContent>
-          <TabsContent value='analysis'>
-            <AnalysisTab />
+          <TabsContent value='analysis' className='space-y-3'>
+            {serverPicker}
+            <AnalysisTab serverId={selectedServerId} />
           </TabsContent>
-          <TabsContent value='graph'>
-            <GraphTab />
+          <TabsContent value='graph' className='space-y-3'>
+            {serverPicker}
+            <GraphTab serverId={selectedServerId} />
           </TabsContent>
           <TabsContent value='user-manager'>
             <UserManagerProtocolsTab />
           </TabsContent>
-          <TabsContent value='policy'>
-            <PolicyTab />
+          <TabsContent value='policy' className='space-y-3'>
+            {serverPicker}
+            <PolicyTab serverId={selectedServerId} />
           </TabsContent>
           <TabsContent value='redline'>
             <RedlineTab />

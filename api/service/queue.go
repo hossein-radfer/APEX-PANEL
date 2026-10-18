@@ -22,7 +22,7 @@ func NewQueue(mikrotikAdaptor *mikrotik.Adaptor) *Queue {
 	}
 }
 
-func (q *Queue) createQueue(peerName, peerAllowedAddress string, downloadBandwidth, uploadBandwidth *string) (*string, error) {
+func (q *Queue) createQueue(serverID uint, peerName, peerAllowedAddress string, downloadBandwidth, uploadBandwidth *string) (*string, error) {
 	normalizedDownload := downloadBandwidth
 	if normalizedDownload == nil {
 		normalizedDownload = utils.Ptr("0")
@@ -40,7 +40,7 @@ func (q *Queue) createQueue(peerName, peerAllowedAddress string, downloadBandwid
 		MaxLimit: &maxLimit,
 	}
 
-	createdQueue, err := q.mikrotikAdaptor.CreateSimpleQueue(context.Background(), wgQueue)
+	createdQueue, err := q.mikrotikAdaptor.ForServer(serverID).CreateSimpleQueue(context.Background(), wgQueue)
 	if err != nil {
 		q.logger.Error("failed to create simple queue for wireguard peer", zap.Error(err))
 		return nil, err
@@ -49,7 +49,7 @@ func (q *Queue) createQueue(peerName, peerAllowedAddress string, downloadBandwid
 	return &createdQueue.ID, nil
 }
 
-func (q *Queue) updateQueue(queueID, downloadBandwidth, uploadBandwidth *string) error {
+func (q *Queue) updateQueue(serverID uint, queueID, downloadBandwidth, uploadBandwidth *string) error {
 	normalizedDownload := downloadBandwidth
 	if normalizedDownload == nil {
 		normalizedDownload = utils.Ptr("0")
@@ -64,7 +64,7 @@ func (q *Queue) updateQueue(queueID, downloadBandwidth, uploadBandwidth *string)
 		MaxLimit: &maxLimit,
 	}
 
-	_, err := q.mikrotikAdaptor.UpdateSimpleQueue(context.Background(), *queueID, queue)
+	_, err := q.mikrotikAdaptor.ForServer(serverID).UpdateSimpleQueue(context.Background(), *queueID, queue)
 	if err != nil {
 		q.logger.Error("failed to update simple queue for wireguard peer", zap.String("queueId", *queueID), zap.Error(err))
 		return err
@@ -73,12 +73,12 @@ func (q *Queue) updateQueue(queueID, downloadBandwidth, uploadBandwidth *string)
 	return nil
 }
 
-func (q *Queue) deleteQueue(queueID *string) error {
+func (q *Queue) deleteQueue(serverID uint, queueID *string) error {
 	if queueID == nil {
 		return nil
 	}
 
-	err := q.mikrotikAdaptor.DeleteSimpleQueue(context.Background(), *queueID)
+	err := q.mikrotikAdaptor.ForServer(serverID).DeleteSimpleQueue(context.Background(), *queueID)
 	if err != nil {
 		q.logger.Error("failed to delete simple queue", zap.String("queueId", *queueID), zap.Error(err))
 		return err

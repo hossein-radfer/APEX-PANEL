@@ -29,10 +29,10 @@ const SEVERITY_COLORS: Record<string, 'green' | 'yellow' | 'red'> = {
 // per poll tick. notified_at shows whether this specific transition
 // actually triggered a Telegram alert (only a transition INTO
 // suspect/confirmed_down does, per the admin's own explicit choice).
-export function EventsTab() {
+export function EventsTab({ serverId }: { serverId?: number }) {
   const { data: rows = [], isLoading } = useQuery({
-    queryKey: ['tunnel_health_events'],
-    queryFn: () => fetchTunnelHealthEvents(200),
+    queryKey: ['tunnel_health_events', serverId],
+    queryFn: () => fetchTunnelHealthEvents(200, serverId),
     refetchInterval: 30_000,
   })
 

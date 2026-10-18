@@ -7,10 +7,17 @@ import (
 	"github.com/maahdima/mwp/api/dataservice/model"
 )
 
-// spyQuotaNotifier records every NotifyQuotaWarning call.
+// spyQuotaNotifier records every NotifyQuotaWarning/NotifyProtocolQuotaWarning call.
 type spyQuotaNotifier struct {
 	calls []struct {
 		reseller         model.Reseller
+		percentRemaining int
+	}
+	protocolCalls []struct {
+		reseller         model.Reseller
+		protocolLabel    string
+		usedBytes        int64
+		quotaBytes       *int64
 		percentRemaining int
 	}
 }
@@ -20,6 +27,16 @@ func (s *spyQuotaNotifier) NotifyQuotaWarning(reseller model.Reseller, percentRe
 		reseller         model.Reseller
 		percentRemaining int
 	}{reseller, percentRemaining})
+}
+
+func (s *spyQuotaNotifier) NotifyProtocolQuotaWarning(reseller model.Reseller, protocolLabel string, usedBytes int64, quotaBytes *int64, percentRemaining int) {
+	s.protocolCalls = append(s.protocolCalls, struct {
+		reseller         model.Reseller
+		protocolLabel    string
+		usedBytes        int64
+		quotaBytes       *int64
+		percentRemaining int
+	}{reseller, protocolLabel, usedBytes, quotaBytes, percentRemaining})
 }
 
 func TestApplyResellerQuota_WarnsOnceUnderTenPercentRemaining(t *testing.T) {

@@ -39,6 +39,8 @@ export const UserManagerAccountStatusEnum = z.enum([
 export const UserManagerAccountSchema = z.object({
   id: z.number(),
   uuid: z.string(),
+  server_id: z.number(),
+  server_name: z.string(),
   username: z.string(),
   group: z.string(),
   profile: z.string(),
@@ -84,6 +86,8 @@ export const UserManagerAccountShareSchema = z.object({
 
 export const UserManagerProtocolConfigSchema = z.object({
   id: z.number(),
+  server_id: z.number(),
+  server_name: z.string(),
   protocol: ProtocolConfigEnum,
   port: z.number(),
   server_address: z.string().nullable(),
@@ -145,6 +149,11 @@ export const UserManagerAccountShareDetailsResponseSchema =
   createApiResponseSchema(UserManagerAccountShareDetailsSchema)
 
 export const CreateUserManagerAccountSchema = z.object({
+  // Optional while only a single-server install is common -- omitted
+  // falls back to that one server server-side (see
+  // UserManagerService.CreateAccount); sent explicitly once more than
+  // one server is registered.
+  server_id: z.number().optional(),
   username: z.string().min(1, 'Username is required'),
   password: z.string().min(1, 'Password is required'),
   group: z.string().min(1, 'Group is required'),
@@ -169,6 +178,12 @@ export const UpdateUserManagerAccountSchema = z.object({
 })
 
 export const BulkCreateUserManagerAccountSchema = z.object({
+  // Optional while only a single-server install is common -- omitted falls
+  // back to that one server server-side (see
+  // UserManagerService.BulkCreateAccounts); sent explicitly once more than
+  // one server is registered, mirroring CreateUserManagerAccountSchema's
+  // own server_id field.
+  server_id: z.number().optional(),
   count: z.number().int().min(1).max(500),
   group: z.string().min(1),
   profile: z.string().min(1),
@@ -215,6 +230,12 @@ export const BulkImportAccountsResultSchema = z.object({
 })
 
 export const UpsertUserManagerProtocolConfigSchema = z.object({
+  // Optional while only a single-server install is common -- omitted falls
+  // back to that one server server-side (see
+  // UserManagerService.UpsertProtocolConfig); sent explicitly once more
+  // than one server is registered, mirroring
+  // CreateUserManagerAccountSchema's own server_id field.
+  server_id: z.number().optional(),
   protocol: ProtocolConfigEnum,
   port: z.number().int().min(1).max(65535),
   server_address: z.string().optional().nullable(),

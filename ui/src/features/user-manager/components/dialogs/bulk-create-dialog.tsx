@@ -4,9 +4,12 @@ import { UserPlusIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { z } from 'zod'
 import { getApiErrorMessage } from '@/lib/api-error.ts'
+import { useAuthStore } from '@/stores/authStore.ts'
 import { useBulkCreateUserManagerAccountsMutation } from '@/hooks/user-manager/useBulkCreateUserManagerAccountsMutation.ts'
 import { useUserManagerGroupsQuery } from '@/hooks/user-manager/useUserManagerGroupsQuery.ts'
 import { useUserManagerProfilesQuery } from '@/hooks/user-manager/useUserManagerProfilesQuery.ts'
+import { useServersListQuery } from '@/hooks/servers/useServersListQuery.ts'
+import { useServerEndpointsQuery } from '@/hooks/servers/useServerEndpointsQuery.ts'
 import { Button } from '@/components/ui/button.tsx'
 import { Checkbox } from '@/components/ui/checkbox.tsx'
 import {
@@ -45,9 +48,33 @@ export function BulkCreateDialog({ open, onOpenChange }: Props) {
   const [protocols, setProtocols] = useState<z.infer<typeof UserManagerProtocolEnum>[]>(['l2tp'])
   const [durationDays, setDurationDays] = useState<number | string>('')
   const [trafficLimit, setTrafficLimit] = useState<number | string>('')
+  const [selectedServerId, setSelectedServerId] = useState<number | undefined>(
+    undefined
+  )
 
-  const { data: groups = [] } = useUserManagerGroupsQuery()
-  const { data: profiles = [] } = useUserManagerProfilesQuery()
+  // A reseller cannot call the admin server list (it carries management
+  // actions they aren't allowed to use and credentials they must not see),
+  // so they fall back to the credential-free endpoints-only query -- same
+  // pattern as AccountForm/use-peer-defaults.tsx. Without a server_id here,
+  // the backend's resolveServerID has no way to pick a server once more
+  // than one is registered, and this dialog's bulk-create call fails
+  // outright for any reseller.
+  const role = useAuthStore((state) => state.auth.admin?.role)
+  const isReseller = role === 'reseller'
+  const { data: adminServersList = [] } = useServersListQuery(open && !isReseller)
+  const { data: resellerServerEndpoints = [] } = useServerEndpointsQuery(
+    open && isReseller
+  )
+  const serversList = isReseller ? resellerServerEndpoints : adminServersList
+
+  const { data: groups = [] } = useUserManagerGroupsQuery(selectedServerId)
+  const { data: profiles = [] } = useUserManagerProfilesQuery(selectedServerId)
+
+  useEffect(() => {
+    if (open && selectedServerId === undefined && serversList.length === 1) {
+      setSelectedServerId(serversList[0].id)
+    }
+  }, [open, selectedServerId, serversList])
 
   useEffect(() => {
     if (open && !group && groups.length > 0) setGroup(groups[0].name)
@@ -64,6 +91,7 @@ export function BulkCreateDialog({ open, onOpenChange }: Props) {
     setProtocols(['l2tp'])
     setDurationDays('')
     setTrafficLimit('')
+    setSelectedServerId(undefined)
   }
 
   const handleClose = (isOpen: boolean) => {
@@ -82,15 +110,31 @@ export function BulkCreateDialog({ open, onOpenChange }: Props) {
   ) => {
     const origin = window.location.origin
     const total = accounts.length
+    const divider = '='.repeat(40)
+    const header = [
+      divider,
+      'لیست حساب‌های ساخته‌شده - User Manager',
+      `تعداد: ${total}`,
+      `تاریخ: ${new Date().toLocaleDateString('fa-IR')}`,
+      divider,
+      '',
+    ].join('\n')
     const lines = accounts.map((account, i) => {
       const link = `${origin}/user-manager-share?shareId=${account.uuid}`
-      return `اکانت ${i + 1} از ${total}\nیوزرنیم 👤: ${account.username}\nپسورد 🔒: ${account.password}\nساب 🔗: ${link}`
+      return [
+        `حساب ${i + 1} از ${total}`,
+        '-'.repeat(24),
+        `نام کاربری : ${account.username}`,
+        `رمز عبور   : ${account.password}`,
+        `لینک اشتراک: ${link}`,
+      ].join('\n')
     })
-    const blob = new Blob([lines.join('\n\n')], { type: 'text/plain;charset=utf-8' })
+    const content = header + lines.join('\n\n' + divider + '\n\n') + '\n' + divider
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `user-manager-accounts-${new Date().toISOString().split('T')[0]}.txt`
+    a.download = `حساب‌های-یوزرمنیجر-${new Date().toISOString().split('T')[0]}.txt`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -121,6 +165,10 @@ export function BulkCreateDialog({ open, onOpenChange }: Props) {
       toast.error('مدت زمان باید یک عدد مثبت (روز) باشد.')
       return
     }
+    if (serversList.length > 1 && selectedServerId === undefined) {
+      toast.error('یک سرور انتخاب کنید.')
+      return
+    }
 
     try {
       const created = await bulkCreate.mutateAsync({
@@ -130,6 +178,7 @@ export function BulkCreateDialog({ open, onOpenChange }: Props) {
         protocols,
         duration_days: parsedDuration,
         traffic_limit: trafficLimit ? String(trafficLimit) : undefined,
+        server_id: selectedServerId,
       })
 
       downloadTxt(
@@ -160,6 +209,27 @@ export function BulkCreateDialog({ open, onOpenChange }: Props) {
         </DialogHeader>
 
         <div className='space-y-4'>
+          {serversList.length > 1 && (
+            <div className='space-y-2'>
+              <Label>سرور</Label>
+              <Select
+                value={selectedServerId ? String(selectedServerId) : undefined}
+                onValueChange={(value) => setSelectedServerId(Number(value))}
+              >
+                <SelectTrigger className='w-full'>
+                  <SelectValue placeholder='یک سرور انتخاب کنید' />
+                </SelectTrigger>
+                <SelectContent>
+                  {serversList.map((server) => (
+                    <SelectItem key={server.id} value={String(server.id)}>
+                      {server.name} ({server.ip_address})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <div className='grid grid-cols-1 gap-x-3 gap-y-4 md:grid-cols-2'>
             <div className='space-y-2'>
               <Label>تعداد</Label>

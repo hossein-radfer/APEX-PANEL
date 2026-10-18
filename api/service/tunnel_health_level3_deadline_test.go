@@ -46,6 +46,7 @@ func TestConsiderRemediation_ForcesLevel3AfterDeadlineRegardlessOfLastLevel(t *t
 	iface := "gre-test"
 	confirmedSince := time.Now().Add(-5 * time.Minute) // older than forceLevel3Deadline (3m)
 	status := model.TunnelHealthStatus{
+		ServerID:           svc.activeServerID,
 		InterfaceName:      iface,
 		Severity:           "confirmed_down",
 		ConfirmedDownSince: &confirmedSince,
@@ -55,7 +56,7 @@ func TestConsiderRemediation_ForcesLevel3AfterDeadlineRegardlessOfLastLevel(t *t
 		t.Fatalf("failed to seed tunnel health status: %v", err)
 	}
 
-	policy, err := svc.policyService.GetOrCreateDefault(iface)
+	policy, err := svc.policyService.GetOrCreateDefault(svc.activeServerID, iface)
 	if err != nil {
 		t.Fatalf("failed to create default policy: %v", err)
 	}
@@ -93,6 +94,7 @@ func TestConsiderRemediation_DoesNotForceLevel3BeforeDeadline(t *testing.T) {
 	iface := "gre-test2"
 	confirmedSince := time.Now().Add(-30 * time.Second) // well inside the 3-minute deadline
 	status := model.TunnelHealthStatus{
+		ServerID:           svc.activeServerID,
 		InterfaceName:      iface,
 		Severity:           "confirmed_down",
 		ConfirmedDownSince: &confirmedSince,
@@ -102,7 +104,7 @@ func TestConsiderRemediation_DoesNotForceLevel3BeforeDeadline(t *testing.T) {
 		t.Fatalf("failed to seed tunnel health status: %v", err)
 	}
 
-	policy, err := svc.policyService.GetOrCreateDefault(iface)
+	policy, err := svc.policyService.GetOrCreateDefault(svc.activeServerID, iface)
 	if err != nil {
 		t.Fatalf("failed to create default policy: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestPollOneTunnel_SkipsEntirelyWhenPolicyDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal disabled policy: %v", err)
 	}
-	if err := db.Create(&model.TunnelPolicy{InterfaceName: iface, PolicyJSON: string(raw)}).Error; err != nil {
+	if err := db.Create(&model.TunnelPolicy{ServerID: svc.activeServerID, InterfaceName: iface, PolicyJSON: string(raw)}).Error; err != nil {
 		t.Fatalf("failed to seed disabled policy: %v", err)
 	}
 

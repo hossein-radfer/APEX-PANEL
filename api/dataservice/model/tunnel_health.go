@@ -29,7 +29,13 @@ import "time"
 // below for the append-only history/alerting side).
 type TunnelHealthStatus struct {
 	Model
-	InterfaceName string `gorm:"type:varchar(255);uniqueIndex;not null"`
+	// ServerID scopes this status row to a specific router -- folded into
+	// InterfaceName's uniqueness so the same GRE/IPIP/EoIP/WireGuard
+	// interface name can independently exist as an infrastructure tunnel on
+	// two different servers. See model.Interface.ServerID's own doc comment
+	// for the general reasoning.
+	ServerID      uint   `gorm:"uniqueIndex:idx_tunnel_health_status_server_iface;not null"`
+	InterfaceName string `gorm:"type:varchar(255);uniqueIndex:idx_tunnel_health_status_server_iface;not null"`
 
 	// Severity is "healthy" | "suspect" | "confirmed_down" -- mirrors the
 	// spec's own SUSPECT/CONFIRMED_DOWN vocabulary. Never
@@ -106,6 +112,7 @@ type TunnelHealthStatus struct {
 // aggressively so it never becomes a second copy of that data).
 type TunnelHealthSample struct {
 	Model
+	ServerID      uint      `gorm:"index;not null"`
 	InterfaceName string    `gorm:"type:varchar(255);index;not null"`
 	TxBytes       int64     `gorm:"type:bigint;not null"`
 	RxBytes       int64     `gorm:"type:bigint;not null"`
@@ -121,6 +128,7 @@ type TunnelHealthSample struct {
 // human-readable, Persian log lines.
 type TunnelHealthEvent struct {
 	Model
+	ServerID      uint      `gorm:"index;not null"`
 	InterfaceName string    `gorm:"type:varchar(255);index;not null"`
 	FromStatus    string    `gorm:"type:varchar(32);not null"`
 	ToStatus      string    `gorm:"type:varchar(32);not null"`
@@ -211,7 +219,10 @@ type GraphEdge struct {
 // doc comment for why (a GRE tunnel has no model.Interface row to FK to).
 type TunnelPolicy struct {
 	Model
-	InterfaceName string `gorm:"type:varchar(255);uniqueIndex;not null"`
+	// ServerID scopes this policy to a specific router -- see
+	// TunnelHealthStatus.ServerID's own doc comment for the same reasoning.
+	ServerID      uint   `gorm:"uniqueIndex:idx_tunnel_policy_server_iface;not null"`
+	InterfaceName string `gorm:"type:varchar(255);uniqueIndex:idx_tunnel_policy_server_iface;not null"`
 	PolicyJSON    string `gorm:"type:text;not null"`
 }
 
@@ -241,6 +252,7 @@ type ManagementRedlineEntry struct {
 // "would have run X" without X ever having been sent.
 type TunnelActionLog struct {
 	Model
+	ServerID      uint   `gorm:"index;not null"`
 	InterfaceName string `gorm:"type:varchar(255);index;not null"`
 	// Level is "1" | "2" | "3" -- matches the spec's own
 	// REMEDIATING_L1/FAILED_OVER_L2/AUTO_ROUTED_L3 state names.
@@ -307,6 +319,7 @@ type TunnelActionLog struct {
 // into a full time-series store.
 type TunnelHealthScore struct {
 	Model
+	ServerID      uint      `gorm:"index;not null"`
 	InterfaceName string    `gorm:"type:varchar(255);index;not null"`
 	Score         int       `gorm:"not null"`
 	SampledAt     time.Time `gorm:"not null;index"`
@@ -330,6 +343,7 @@ type TunnelHealthScore struct {
 // "couldn't tell" rather than guessing.
 type TunnelIncidentDiagnosis struct {
 	Model
+	ServerID      uint   `gorm:"index;not null"`
 	InterfaceName string `gorm:"type:varchar(255);index;not null"`
 	// Cause is "remote_unreachable" | "router_uplink_down" |
 	// "router_resource_exhausted" | "unknown".
@@ -350,6 +364,7 @@ type TunnelIncidentDiagnosis struct {
 // signals do.
 type TunnelBackupProbeResult struct {
 	Model
+	ServerID        uint      `gorm:"index;not null"`
 	InterfaceName   string    `gorm:"type:varchar(255);index;not null"`
 	BackupGatewayIP string    `gorm:"type:varchar(64);not null"`
 	Reachable       bool      `gorm:"not null"`

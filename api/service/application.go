@@ -317,12 +317,24 @@ func (s *ApplicationService) CreateApplication(req *schema.CreateApplicationRequ
 				return nil, err
 			}
 		}
-		for _, g := range req.UserManagerGroups {
-			if err := s.userMgr.ensureResellerCanUseGroup(*resellerID, g.GroupName); err != nil {
+		if len(req.UserManagerGroups) > 0 {
+			// An Application has no per-group server picker of its own (see
+			// model.Application's own doc comment -- it fans out across
+			// resources as a single bundle, not per-location), so this
+			// checks against this install's one server, the same server
+			// provisionUserManagerGroup's own CreateAccount call will
+			// resolve to via resolveServerID(nil).
+			serverID, err := resolveServerID(s.db, nil)
+			if err != nil {
 				return nil, err
 			}
-			if err := s.userMgr.ensureResellerCanUseProfile(*resellerID, g.ProfileName); err != nil {
-				return nil, err
+			for _, g := range req.UserManagerGroups {
+				if err := s.userMgr.ensureResellerCanUseGroup(*resellerID, serverID, g.GroupName); err != nil {
+					return nil, err
+				}
+				if err := s.userMgr.ensureResellerCanUseProfile(*resellerID, serverID, g.ProfileName); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -672,12 +684,19 @@ func (s *ApplicationService) reconcileApplicationInterfaces(app *model.Applicati
 // also removes the old RouterOS profile link and creates a new one, not
 // a true in-place mutation).
 func (s *ApplicationService) reconcileApplicationUserManagerGroups(app *model.Application, requestedGroups []schema.ApplicationGroupProfile, resellerID *uint) error {
-	if resellerID != nil {
+	if resellerID != nil && len(requestedGroups) > 0 {
+		// See CreateApplication's own identical comment -- checks against
+		// this install's one server, matching provisionUserManagerGroup's
+		// own CreateAccount resolution.
+		serverID, err := resolveServerID(s.db, nil)
+		if err != nil {
+			return err
+		}
 		for _, g := range requestedGroups {
-			if err := s.userMgr.ensureResellerCanUseGroup(*resellerID, g.GroupName); err != nil {
+			if err := s.userMgr.ensureResellerCanUseGroup(*resellerID, serverID, g.GroupName); err != nil {
 				return err
 			}
-			if err := s.userMgr.ensureResellerCanUseProfile(*resellerID, g.ProfileName); err != nil {
+			if err := s.userMgr.ensureResellerCanUseProfile(*resellerID, serverID, g.ProfileName); err != nil {
 				return err
 			}
 		}

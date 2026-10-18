@@ -42,7 +42,15 @@ const (
 // two account types never get mixed in a listing or a query.
 type UserManagerAccount struct {
 	Model
-	UUID     string `gorm:"type:varchar(36);uniqueIndex;not null"` // for the public share link, mirrors Peer.UUID
+	UUID string `gorm:"type:varchar(36);uniqueIndex;not null"` // for the public share link, mirrors Peer.UUID
+	// ServerID identifies which physical Mikrotik router this account's
+	// RouterOS User Manager user lives on -- see model.Interface.ServerID's
+	// own doc comment for the same reasoning. Username stays globally
+	// unique (not scoped to ServerID): a customer-facing login name, unlike
+	// Peer's RouterOS-assigned PeerID/AllowedAddress, has no reason to
+	// collide across servers in the first place, so no uniqueIndex change
+	// is needed here, only the added column.
+	ServerID uint   `gorm:"index;not null"`
 	Username string `gorm:"type:varchar(255);uniqueIndex;not null"`
 	// Password is stored in plaintext -- the same precedent as
 	// Peer.PrivateKey. RouterOS User Manager requires the plaintext

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
@@ -14,6 +14,8 @@ import {
 import { toast } from 'sonner'
 import { getApiErrorMessage } from '@/lib/api-error.ts'
 import { useAuthStore } from '@/stores/authStore.ts'
+import { useServersListQuery } from '@/hooks/servers/useServersListQuery.ts'
+import { useServerEndpointsQuery } from '@/hooks/servers/useServerEndpointsQuery.ts'
 import { useUserManagerGroupsQuery } from '@/hooks/user-manager/useUserManagerGroupsQuery.ts'
 import { useUserManagerProfilesQuery } from '@/hooks/user-manager/useUserManagerProfilesQuery.ts'
 import { useAssignedUserManagerGroupsQuery } from '@/hooks/resellers/useAssignedUserManagerGroupsQuery.ts'
@@ -75,10 +77,39 @@ export function AccountForm({
       ? (admin?.reseller_id ?? undefined)
       : undefined
 
+  // Server picker is create-only -- an existing account's server is fixed
+  // for its lifetime, mirroring InterfaceForm's own identical "picker
+  // only on create" convention. A reseller (or an admin acting on behalf of
+  // one) cannot call the admin server list (it carries management actions
+  // they aren't allowed to use and credentials they must not see), so they
+  // fall back to the credential-free endpoints-only query -- same pattern
+  // already established in use-peer-defaults.tsx. Without this, resolveServerID
+  // on the backend has no way to pick a server once more than one is
+  // registered, and every reseller create call fails outright.
+  const useResellerServers = isForReseller || isSelfServeReseller
+  const { data: adminServersList = [] } = useServersListQuery(
+    !isEdit && !useResellerServers
+  )
+  const { data: resellerServerEndpoints = [] } = useServerEndpointsQuery(
+    !isEdit && useResellerServers
+  )
+  const serversList = useResellerServers
+    ? resellerServerEndpoints
+    : adminServersList
+  const [selectedServerId, setSelectedServerId] = useState<
+    number | undefined
+  >(undefined)
+
+  useEffect(() => {
+    if (!isEdit && selectedServerId === undefined && serversList.length === 1) {
+      setSelectedServerId(serversList[0].id)
+    }
+  }, [isEdit, selectedServerId, serversList])
+
   const { data: groups = [], isLoading: isGroupsLoading } =
-    useUserManagerGroupsQuery()
+    useUserManagerGroupsQuery(selectedServerId)
   const { data: profiles = [], isLoading: isProfilesLoading } =
-    useUserManagerProfilesQuery()
+    useUserManagerProfilesQuery(selectedServerId)
   const { data: assignedGroupNames } = useAssignedUserManagerGroupsQuery(
     restrictingResellerId
   )
@@ -176,7 +207,10 @@ export function AccountForm({
         } else {
           await createAccountForReseller({
             resellerId: targetResellerId,
-            account: values as CreateUserManagerAccountRequest,
+            account: {
+              ...(values as CreateUserManagerAccountRequest),
+              server_id: selectedServerId,
+            },
           })
           toast.success('حساب با موفقیت ایجاد شد.', { duration: 5000 })
         }
@@ -184,7 +218,10 @@ export function AccountForm({
         await updateAccount(values as UpdateUserManagerAccountRequest)
         toast.success('حساب با موفقیت به‌روزرسانی شد.', { duration: 5000 })
       } else {
-        await createAccount(values as CreateUserManagerAccountRequest)
+        await createAccount({
+          ...(values as CreateUserManagerAccountRequest),
+          server_id: selectedServerId,
+        })
         toast.success('حساب با موفقیت ایجاد شد.', { duration: 5000 })
       }
       form.reset()
@@ -203,6 +240,32 @@ export function AccountForm({
         onSubmit={form.handleSubmit(onSubmit)}
         className='space-y-4'
       >
+        {/* Server picker -- only shown once there's actually more than one
+            server to choose between (same convention as InterfaceForm's
+            own identical picker); auto-selects silently in the single-
+            server case. Groups/profiles above are re-queried scoped to
+            whichever server is selected. */}
+        {!isEdit && serversList.length > 1 && (
+          <div className='space-y-2'>
+            <p className='text-sm font-medium'>سرور</p>
+            <Select
+              value={selectedServerId ? String(selectedServerId) : undefined}
+              onValueChange={(value) => setSelectedServerId(Number(value))}
+            >
+              <SelectTrigger className='w-full'>
+                <SelectValue placeholder='یک سرور انتخاب کنید' />
+              </SelectTrigger>
+              <SelectContent>
+                {serversList.map((server) => (
+                  <SelectItem key={server.id} value={String(server.id)}>
+                    {server.name} ({server.ip_address})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
         <div className='grid grid-cols-1 gap-x-3 gap-y-4 md:grid-cols-2'>
           {!isEdit && (
             <>

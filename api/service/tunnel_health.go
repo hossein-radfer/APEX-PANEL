@@ -53,6 +53,19 @@ type TunnelHealthService struct {
 	policyService   *TunnelPolicyService
 	redline         *TunnelRedlineValidator
 	logger          *zap.Logger
+
+	// activeServerID is resolved once per Poll() tick (resolveActiveServerID)
+	// and read by every private helper this poll invokes, rather than
+	// threaded as a parameter through several dozen methods -- this service
+	// has always operated against exactly one server (see Discover's own
+	// doc comment on TunnelGraphService for the identical, pre-existing
+	// "one active server" convention); naming that assumption as an
+	// explicit field makes every mikrotikAdaptor call correctly scoped
+	// instead of silently relying on GetClient(nil)'s old fallback
+	// behavior. Not safe for concurrent polls of DIFFERENT servers from the
+	// same *TunnelHealthService instance -- this service is a single
+	// background poll loop, never invoked concurrently with itself.
+	activeServerID uint
 }
 
 func NewTunnelHealthService(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor, graphService *TunnelGraphService) *TunnelHealthService {
@@ -65,6 +78,25 @@ func NewTunnelHealthService(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor, grap
 		redline:         NewTunnelRedlineValidator(db),
 		logger:          zap.L().Named("TunnelHealthService"),
 	}
+}
+
+// ServerNamesByID returns every registered server's Name keyed by ID --
+// mirrors UserManagerService.serverNamesByID/WgInterface.serverNamesByID's
+// identical pattern, exported here (unlike those private siblings) since
+// TunnelHealthController denormalizes ServerName onto several different
+// response types (statuses, events, actions, diagnoses, backup probes)
+// and would otherwise need its own duplicate lookup.
+func (s *TunnelHealthService) ServerNamesByID() map[uint]string {
+	var servers []model.Server
+	if err := s.db.Find(&servers).Error; err != nil {
+		s.logger.Warn("failed to fetch servers for name lookup", zap.Error(err))
+		return map[uint]string{}
+	}
+	names := make(map[uint]string, len(servers))
+	for _, srv := range servers {
+		names[srv.ID] = srv.Name
+	}
+	return names
 }
 
 // SetBotNotifier wires the Telegram alert channel in -- mirrors every
@@ -253,13 +285,13 @@ func computeHealthScore(running, disabled bool, worstHandshakeAge *int, asymmetr
 func (s *TunnelHealthService) recordHealthScoreAndWarn(interfaceName string, running, disabled bool, worstHandshakeAge *int, asymmetry bool, severity string, now time.Time) {
 	score := computeHealthScore(running, disabled, worstHandshakeAge, asymmetry)
 
-	if err := s.db.Create(&model.TunnelHealthScore{InterfaceName: interfaceName, Score: score, SampledAt: now}).Error; err != nil {
+	if err := s.db.Create(&model.TunnelHealthScore{ServerID: s.activeServerID, InterfaceName: interfaceName, Score: score, SampledAt: now}).Error; err != nil {
 		s.logger.Warn("failed to record tunnel health score", zap.String("interface", interfaceName), zap.Error(err))
 	}
 
 	var toDelete []uint
 	s.db.Model(&model.TunnelHealthScore{}).
-		Where("interface_name = ?", interfaceName).
+		Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).
 		Order("sampled_at desc").
 		Offset(healthScoreHistoryRetention).
 		Pluck("id", &toDelete)
@@ -276,7 +308,7 @@ func (s *TunnelHealthService) recordHealthScoreAndWarn(interfaceName string, run
 	}
 
 	var samples []model.TunnelHealthScore
-	if err := s.db.Where("interface_name = ?", interfaceName).Order("sampled_at desc").Limit(healthScoreWarnLookback + 1).Find(&samples).Error; err != nil {
+	if err := s.db.Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).Order("sampled_at desc").Limit(healthScoreWarnLookback + 1).Find(&samples).Error; err != nil {
 		return
 	}
 	if len(samples) < healthScoreWarnLookback+1 {
@@ -298,8 +330,8 @@ func (s *TunnelHealthService) recordHealthScoreAndWarn(interfaceName string, run
 	// whether Telegram happens to be wired up. Only the actual outbound
 	// message send below is skipped without a notifier.
 	var recentWarning model.TunnelHealthEvent
-	err := s.db.Where("interface_name = ? AND to_status = ? AND detected_at >= ?",
-		interfaceName, "degrading_warning", now.Add(-healthScoreWarnCooldown)).
+	err := s.db.Where("server_id = ? AND interface_name = ? AND to_status = ? AND detected_at >= ?",
+		s.activeServerID, interfaceName, "degrading_warning", now.Add(-healthScoreWarnCooldown)).
 		Order("detected_at desc").First(&recentWarning).Error
 	if err == nil {
 		return
@@ -315,6 +347,7 @@ func (s *TunnelHealthService) recordHealthScoreAndWarn(interfaceName string, run
 	// as every other transition event, rather than adding a whole new
 	// table for what is fundamentally the same kind of record.
 	event := model.TunnelHealthEvent{
+		ServerID:      s.activeServerID,
 		InterfaceName: interfaceName,
 		FromStatus:    "healthy",
 		ToStatus:      "degrading_warning",
@@ -338,29 +371,51 @@ func (s *TunnelHealthService) recordHealthScoreAndWarn(interfaceName string, run
 	s.db.Model(&event).Update("notified_at", sentAt)
 }
 
-// Poll is the scheduled job entry point -- one full detection cycle
-// across every interface TunnelGraphService's latest snapshot flagged as
-// a genuine infrastructure tunnel. Deliberately does NOT poll every
-// WireGuard interface on the router (see this service's own top-level
-// doc comment) -- if no discovery snapshot exists yet, this is a no-op,
-// not an error, until the graph-discovery job (running on its own,
-// separate 5-minute schedule) completes its first tick.
+// Poll is the scheduled job entry point -- one full detection cycle, run
+// independently for EVERY active server (model.Server.IsActive), across
+// every interface each server's own latest TunnelGraphService snapshot
+// flagged as a genuine infrastructure tunnel. Deliberately does NOT poll
+// every WireGuard interface on the router (see this service's own
+// top-level doc comment) -- if a given server has no discovery snapshot
+// yet, that one server is a no-op, not an error, until the graph-discovery
+// job (running on its own, separate 5-minute schedule) completes its
+// first tick for it.
+//
+// Confirmed, reported multi-server gap this closes: this used to resolve
+// only a single "first active" server (resolveActiveServerID, removed) and
+// poll ONLY that one, so every other registered server's tunnels were
+// never monitored at all -- no detection, no alerting, no remediation,
+// completely silently. Each server's pass runs sequentially (never
+// concurrently with another server's pass from this same instance -- see
+// activeServerID's own doc comment on why), and ForEachActiveServer's
+// "one dead source never blocks the rest" convention means a fetch failure
+// against one server's router still lets every other server's pass run on
+// schedule this same tick.
 func (s *TunnelHealthService) Poll() {
-	tunnelNodes, err := s.graphService.DiscoveredTunnelInterfaces()
+	ForEachActiveServer(s.db, func(server model.Server) error {
+		s.pollOneServer(server.ID)
+		return nil
+	})
+}
+
+func (s *TunnelHealthService) pollOneServer(serverID uint) {
+	s.activeServerID = serverID
+
+	tunnelNodes, err := s.graphService.DiscoveredTunnelInterfaces(serverID)
 	if err != nil {
-		s.logger.Error("failed to load discovered tunnel interfaces", zap.Error(err))
+		s.logger.Error("failed to load discovered tunnel interfaces", zap.Uint("server_id", serverID), zap.Error(err))
 		return
 	}
 	if len(tunnelNodes) == 0 {
 		return
 	}
 
-	s.pruneStaleTunnels(tunnelNodes)
+	s.pruneStaleTunnels(serverID, tunnelNodes)
 
 	ctx := context.Background()
-	mtInterfaces, err := s.mikrotikAdaptor.FetchAllInterfaces(ctx)
+	mtInterfaces, err := s.mikrotikAdaptor.ForServer(serverID).FetchAllInterfaces(ctx)
 	if err != nil {
-		s.logger.Error("failed to fetch interfaces from mikrotik", zap.Error(err))
+		s.logger.Error("failed to fetch interfaces from mikrotik", zap.Uint("server_id", serverID), zap.Error(err))
 		return
 	}
 	mtIfaceByName := make(map[string]mikrotik.Interface, len(mtInterfaces))
@@ -368,9 +423,9 @@ func (s *TunnelHealthService) Poll() {
 		mtIfaceByName[i.Name] = i
 	}
 
-	mtPeers, err := s.mikrotikAdaptor.FetchWgPeers(ctx)
+	mtPeers, err := s.mikrotikAdaptor.ForServer(serverID).FetchWgPeers(ctx)
 	if err != nil {
-		s.logger.Error("failed to fetch wireguard peers from mikrotik", zap.Error(err))
+		s.logger.Error("failed to fetch wireguard peers from mikrotik", zap.Uint("server_id", serverID), zap.Error(err))
 		mtPeers = nil // WireGuard-based tunnels simply skip handshake detection this tick
 	}
 	peersByInterface := make(map[string][]mikrotik.WireGuardPeer, len(mtPeers))
@@ -408,23 +463,32 @@ func (s *TunnelHealthService) Poll() {
 // append-only audit history (see their own doc comments), and a past
 // event genuinely happened at the time it was recorded regardless of
 // what today's detection says.
-func (s *TunnelHealthService) pruneStaleTunnels(tunnelNodes []model.GraphNode) {
+// pruneStaleTunnels is scoped to serverID throughout -- a confirmed,
+// dangerous multi-server bug caught before it ever shipped: without the
+// "AND server_id = ?" condition on every one of these deletes, SERVER A's
+// own poll pass would delete SERVER B's TunnelHealthStatus/TunnelPolicy/
+// TunnelHealthScore/TunnelBackupProbeResult rows for any interface name
+// that doesn't happen to also exist as a current tunnel on server A --
+// which, since two different routers' own interface names are almost
+// never identical sets, means nearly every OTHER server's entire tunnel
+// history would be wiped on every single server's own 60s poll tick.
+func (s *TunnelHealthService) pruneStaleTunnels(serverID uint, tunnelNodes []model.GraphNode) {
 	currentNames := make([]string, len(tunnelNodes))
 	for i, node := range tunnelNodes {
 		currentNames[i] = node.Name
 	}
 	// Unscoped (hard delete), not a soft delete: both tables carry a
-	// plain UNIQUE index on interface_name that is NOT filtered on
-	// deleted_at, so a soft-deleted row would still occupy that name and
-	// make pollOneTunnel's/GetOrCreateDefault's own Create() calls fail
-	// with a unique-constraint violation the moment a pruned interface
-	// (e.g. one that drops out of detection for one tick and comes back)
-	// needs its row recreated.
-	if err := s.db.Unscoped().Where("interface_name NOT IN ?", currentNames).Delete(&model.TunnelHealthStatus{}).Error; err != nil {
-		s.logger.Error("failed to prune stale tunnel health statuses", zap.Error(err))
+	// composite UNIQUE index on (server_id, interface_name) that is NOT
+	// filtered on deleted_at, so a soft-deleted row would still occupy that
+	// (server, name) pair and make pollOneTunnel's/GetOrCreateDefault's own
+	// Create() calls fail with a unique-constraint violation the moment a
+	// pruned interface (e.g. one that drops out of detection for one tick
+	// and comes back) needs its row recreated.
+	if err := s.db.Unscoped().Where("server_id = ? AND interface_name NOT IN ?", serverID, currentNames).Delete(&model.TunnelHealthStatus{}).Error; err != nil {
+		s.logger.Error("failed to prune stale tunnel health statuses", zap.Uint("server_id", serverID), zap.Error(err))
 	}
-	if err := s.db.Unscoped().Where("interface_name NOT IN ?", currentNames).Delete(&model.TunnelPolicy{}).Error; err != nil {
-		s.logger.Error("failed to prune stale tunnel policies", zap.Error(err))
+	if err := s.db.Unscoped().Where("server_id = ? AND interface_name NOT IN ?", serverID, currentNames).Delete(&model.TunnelPolicy{}).Error; err != nil {
+		s.logger.Error("failed to prune stale tunnel policies", zap.Uint("server_id", serverID), zap.Error(err))
 	}
 	// TunnelHealthScore/TunnelBackupProbeResult are per-interface ROLLING
 	// windows (see their own doc comments), pruned down to a fixed row
@@ -433,11 +497,11 @@ func (s *TunnelHealthService) pruneStaleTunnels(tunnelNodes []model.GraphNode) {
 	// otherwise never poll/probe again and its old rows would linger
 	// forever instead of aging out, so they're hard-deleted here too,
 	// same as TunnelHealthStatus/TunnelPolicy above.
-	if err := s.db.Unscoped().Where("interface_name NOT IN ?", currentNames).Delete(&model.TunnelHealthScore{}).Error; err != nil {
-		s.logger.Error("failed to prune stale tunnel health scores", zap.Error(err))
+	if err := s.db.Unscoped().Where("server_id = ? AND interface_name NOT IN ?", serverID, currentNames).Delete(&model.TunnelHealthScore{}).Error; err != nil {
+		s.logger.Error("failed to prune stale tunnel health scores", zap.Uint("server_id", serverID), zap.Error(err))
 	}
-	if err := s.db.Unscoped().Where("interface_name NOT IN ?", currentNames).Delete(&model.TunnelBackupProbeResult{}).Error; err != nil {
-		s.logger.Error("failed to prune stale tunnel backup probe results", zap.Error(err))
+	if err := s.db.Unscoped().Where("server_id = ? AND interface_name NOT IN ?", serverID, currentNames).Delete(&model.TunnelBackupProbeResult{}).Error; err != nil {
+		s.logger.Error("failed to prune stale tunnel backup probe results", zap.Uint("server_id", serverID), zap.Error(err))
 	}
 }
 
@@ -465,7 +529,7 @@ func (s *TunnelHealthService) pollOneTunnel(node model.GraphNode, mtIface mikrot
 	// گزارش/شناسایی روی یک تانل خاص" (the ability to disable reporting/
 	// detection for one specific tunnel, for cases where the admin
 	// doesn't want this system interfering with that tunnel at all).
-	policy, err := s.policyService.GetOrCreateDefault(interfaceName)
+	policy, err := s.policyService.GetOrCreateDefault(s.activeServerID, interfaceName)
 	if err != nil {
 		s.logger.Error("failed to load tunnel policy", zap.String("interface", interfaceName), zap.Error(err))
 		return
@@ -491,13 +555,14 @@ func (s *TunnelHealthService) pollOneTunnel(node model.GraphNode, mtIface mikrot
 	severity := s.computeSeverity(running, disabled, worstHandshakeAge, asymmetry)
 
 	var status model.TunnelHealthStatus
-	statusErr := s.db.Where("interface_name = ?", interfaceName).First(&status).Error
+	statusErr := s.db.Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).First(&status).Error
 	isNew := statusErr != nil
 	previousSeverity := "healthy"
 	if !isNew {
 		previousSeverity = status.Severity
 	}
 
+	status.ServerID = s.activeServerID
 	status.InterfaceName = interfaceName
 	status.Severity = severity
 	status.InterfaceRunning = running
@@ -636,7 +701,7 @@ func (s *TunnelHealthService) recordTxRxSample(interfaceName string, mtIface mik
 		totalRx = utils.ParseStringToInt(mtIface.RxByte)
 	}
 
-	sample := model.TunnelHealthSample{InterfaceName: interfaceName, TxBytes: totalTx, RxBytes: totalRx, SampledAt: now}
+	sample := model.TunnelHealthSample{ServerID: s.activeServerID, InterfaceName: interfaceName, TxBytes: totalTx, RxBytes: totalRx, SampledAt: now}
 	if err := s.db.Create(&sample).Error; err != nil {
 		s.logger.Warn("failed to record tunnel health sample", zap.String("interface", interfaceName), zap.Error(err))
 	}
@@ -654,7 +719,7 @@ func (s *TunnelHealthService) recordTxRxSample(interfaceName string, mtIface mik
 	// meant to stay small per interface).
 	var toDelete []uint
 	s.db.Model(&model.TunnelHealthSample{}).
-		Where("interface_name = ?", interfaceName).
+		Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).
 		Order("sampled_at desc").
 		Offset(txRxSampleRetention).
 		Pluck("id", &toDelete)
@@ -663,7 +728,7 @@ func (s *TunnelHealthService) recordTxRxSample(interfaceName string, mtIface mik
 	}
 
 	var samples []model.TunnelHealthSample
-	if err := s.db.Where("interface_name = ?", interfaceName).Order("sampled_at desc").Limit(txRxAsymmetryWindow + 1).Find(&samples).Error; err != nil {
+	if err := s.db.Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).Order("sampled_at desc").Limit(txRxAsymmetryWindow + 1).Find(&samples).Error; err != nil {
 		return false
 	}
 	if len(samples) < txRxAsymmetryWindow+1 {
@@ -696,6 +761,7 @@ func (s *TunnelHealthService) recordTransition(interfaceName, from, to string, r
 	evidence := s.buildEvidence(running, disabled, worstHandshakeAge, asymmetry)
 
 	event := model.TunnelHealthEvent{
+		ServerID:      s.activeServerID,
 		InterfaceName: interfaceName,
 		FromStatus:    from,
 		ToStatus:      to,
@@ -827,6 +893,7 @@ func (s *TunnelHealthService) diagnoseIncidentOnce(interfaceName string, now tim
 	evidence := strings.Join(evidenceParts, "؛ ")
 
 	diagnosis := model.TunnelIncidentDiagnosis{
+		ServerID:      s.activeServerID,
 		InterfaceName: interfaceName,
 		Cause:         cause,
 		Evidence:      evidence,
@@ -853,7 +920,7 @@ func (s *TunnelHealthService) diagnoseIncidentOnce(interfaceName string, now tim
 // immediate-gw value first, since that IS the address a ping should
 // target to test reachability of this specific tunnel's remote end.
 func (s *TunnelHealthService) tunnelGatewayIP(ctx context.Context, interfaceName string) string {
-	routes, err := s.mikrotikAdaptor.FetchIPRoutes(ctx)
+	routes, err := s.mikrotikAdaptor.ForServer(s.activeServerID).FetchIPRoutes(ctx)
 	if err != nil {
 		return ""
 	}
@@ -884,7 +951,7 @@ func (s *TunnelHealthService) probeReachable(ctx context.Context, address string
 	if address == "" {
 		return false, "آی‌پی مقصد برای تست در دسترس نبود"
 	}
-	results, err := s.mikrotikAdaptor.Ping(ctx, address, diagnosisPingCount)
+	results, err := s.mikrotikAdaptor.ForServer(s.activeServerID).Ping(ctx, address, diagnosisPingCount)
 	if err != nil {
 		return false, fmt.Sprintf("تست پینگ به %s ناموفق بود: %s", address, err.Error())
 	}
@@ -905,7 +972,7 @@ func (s *TunnelHealthService) probeOtherTunnels(ctx context.Context, downInterfa
 	const maxOtherProbes = 3
 
 	var others []model.TunnelHealthStatus
-	if err := s.db.Where("interface_name != ? AND severity = ?", downInterfaceName, "healthy").
+	if err := s.db.Where("server_id = ? AND interface_name != ? AND severity = ?", s.activeServerID, downInterfaceName, "healthy").
 		Limit(maxOtherProbes).Find(&others).Error; err != nil {
 		return 0, 0, ""
 	}
@@ -936,7 +1003,7 @@ func (s *TunnelHealthService) probeOtherTunnels(ctx context.Context, downInterfa
 // memory and reports whether either crosses this diagnosis's own
 // conservative overload thresholds.
 func (s *TunnelHealthService) probeRouterResources(ctx context.Context) (cpuHigh, memLow bool, evidence string) {
-	info, err := s.mikrotikAdaptor.FetchDeviceInfo(ctx)
+	info, err := s.mikrotikAdaptor.ForServer(s.activeServerID).FetchDeviceInfo(ctx)
 	if err != nil {
 		return false, false, "خواندن وضعیت منابع روتر ممکن نشد"
 	}
@@ -960,9 +1027,17 @@ func (s *TunnelHealthService) probeRouterResources(ctx context.Context) (cpuHigh
 
 // ListStatuses returns every tracked infrastructure tunnel's current
 // health -- the admin panel's own "read the current state" endpoint.
-func (s *TunnelHealthService) ListStatuses() ([]model.TunnelHealthStatus, error) {
+// serverID is optional: nil returns every server's rows mixed together
+// (never merged/deduplicated by interface name -- a confirmed, reported
+// requirement that same-named interfaces on different servers must stay
+// visibly distinct, not silently blended); a value scopes to one server.
+func (s *TunnelHealthService) ListStatuses(serverID *uint) ([]model.TunnelHealthStatus, error) {
+	query := s.db.Order("severity desc, interface_name asc")
+	if serverID != nil {
+		query = query.Where("server_id = ?", *serverID)
+	}
 	var statuses []model.TunnelHealthStatus
-	if err := s.db.Order("severity desc, interface_name asc").Find(&statuses).Error; err != nil {
+	if err := query.Find(&statuses).Error; err != nil {
 		s.logger.Error("failed to list tunnel health statuses", zap.Error(err))
 		return nil, err
 	}
@@ -970,13 +1045,18 @@ func (s *TunnelHealthService) ListStatuses() ([]model.TunnelHealthStatus, error)
 }
 
 // ListEvents returns the most recent detection events (history/alerting
-// log page, spec section b-8), newest first.
-func (s *TunnelHealthService) ListEvents(limit int) ([]model.TunnelHealthEvent, error) {
+// log page, spec section b-8), newest first. serverID is optional, same
+// convention as ListStatuses.
+func (s *TunnelHealthService) ListEvents(serverID *uint, limit int) ([]model.TunnelHealthEvent, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	query := s.db.Order("detected_at desc").Limit(limit)
+	if serverID != nil {
+		query = query.Where("server_id = ?", *serverID)
+	}
 	var events []model.TunnelHealthEvent
-	if err := s.db.Order("detected_at desc").Limit(limit).Find(&events).Error; err != nil {
+	if err := query.Find(&events).Error; err != nil {
 		s.logger.Error("failed to list tunnel health events", zap.Error(err))
 		return nil, err
 	}
@@ -985,12 +1065,17 @@ func (s *TunnelHealthService) ListEvents(limit int) ([]model.TunnelHealthEvent, 
 
 // ListActions returns the most recent remediation decisions (real or
 // simulated) -- the "تاریخچه و گزارش‌ها" page's own dry-run-aware view.
-func (s *TunnelHealthService) ListActions(limit int) ([]model.TunnelActionLog, error) {
+// serverID is optional, same convention as ListStatuses.
+func (s *TunnelHealthService) ListActions(serverID *uint, limit int) ([]model.TunnelActionLog, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	query := s.db.Order("executed_at desc").Limit(limit)
+	if serverID != nil {
+		query = query.Where("server_id = ?", *serverID)
+	}
 	var actions []model.TunnelActionLog
-	if err := s.db.Order("executed_at desc").Limit(limit).Find(&actions).Error; err != nil {
+	if err := query.Find(&actions).Error; err != nil {
 		s.logger.Error("failed to list tunnel action log", zap.Error(err))
 		return nil, err
 	}
@@ -1020,7 +1105,7 @@ func (s *TunnelHealthService) antiFlappingCooldownActive(interfaceName string, p
 	windowStart := now.Add(-time.Duration(policy.AntiFlapping.WindowMinutes) * time.Minute)
 	var flapCount int64
 	s.db.Model(&model.TunnelHealthEvent{}).
-		Where("interface_name = ? AND from_status = ? AND to_status != ? AND detected_at >= ?", interfaceName, "healthy", "healthy", windowStart).
+		Where("server_id = ? AND interface_name = ? AND from_status = ? AND to_status != ? AND detected_at >= ?", s.activeServerID, interfaceName, "healthy", "healthy", windowStart).
 		Count(&flapCount)
 	if flapCount <= int64(policy.AntiFlapping.MaxFlaps) {
 		return false
@@ -1031,7 +1116,7 @@ func (s *TunnelHealthService) antiFlappingCooldownActive(interfaceName string, p
 	// naturally rather than being permanent).
 	cooldownStart := now.Add(-time.Duration(policy.AntiFlapping.CooldownHours) * time.Hour)
 	var recentFlap model.TunnelHealthEvent
-	err := s.db.Where("interface_name = ? AND from_status = ? AND to_status != ? AND detected_at >= ?", interfaceName, "healthy", "healthy", cooldownStart).
+	err := s.db.Where("server_id = ? AND interface_name = ? AND from_status = ? AND to_status != ? AND detected_at >= ?", s.activeServerID, interfaceName, "healthy", "healthy", cooldownStart).
 		Order("detected_at desc").First(&recentFlap).Error
 	return err == nil
 }
@@ -1062,7 +1147,7 @@ func (s *TunnelHealthService) logSkipOnce(interfaceName string, now time.Time, r
 // first.
 func (s *TunnelHealthService) lastActionSinceUnhealthy(interfaceName string) (*model.TunnelActionLog, error) {
 	var lastHealthyEvent model.TunnelHealthEvent
-	err := s.db.Where("interface_name = ? AND to_status = ?", interfaceName, "healthy").
+	err := s.db.Where("server_id = ? AND interface_name = ? AND to_status = ?", s.activeServerID, interfaceName, "healthy").
 		Order("detected_at desc").First(&lastHealthyEvent).Error
 	sinceTime := time.Time{}
 	if err == nil {
@@ -1070,7 +1155,7 @@ func (s *TunnelHealthService) lastActionSinceUnhealthy(interfaceName string) (*m
 	}
 
 	var action model.TunnelActionLog
-	err = s.db.Where("interface_name = ? AND executed_at >= ?", interfaceName, sinceTime).
+	err = s.db.Where("server_id = ? AND interface_name = ? AND executed_at >= ?", s.activeServerID, interfaceName, sinceTime).
 		Order("executed_at desc").First(&action).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1178,7 +1263,7 @@ const forceLevel3Deadline = 3 * time.Minute
 // tunnel that isn't currently in an active incident.
 func (s *TunnelHealthService) confirmedDownDeadlineExceeded(interfaceName string, now time.Time) bool {
 	var status model.TunnelHealthStatus
-	if err := s.db.Where("interface_name = ?", interfaceName).First(&status).Error; err != nil {
+	if err := s.db.Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).First(&status).Error; err != nil {
 		return false
 	}
 	if status.ConfirmedDownSince == nil {
@@ -1194,7 +1279,7 @@ func (s *TunnelHealthService) confirmedDownDeadlineExceeded(interfaceName string
 // remediation so services have time to come back up on their own after
 // a reboot before anything is toggled.
 func (s *TunnelHealthService) isInBootGrace(now time.Time) bool {
-	info, err := s.mikrotikAdaptor.FetchDeviceInfo(context.Background())
+	info, err := s.mikrotikAdaptor.ForServer(s.activeServerID).FetchDeviceInfo(context.Background())
 	if err != nil {
 		// Uptime unreadable -- fail open toward caution: treat as boot
 		// grace so a transient API error never causes an unintended
@@ -1229,7 +1314,7 @@ func (s *TunnelHealthService) attemptLevel1(interfaceName string, config TunnelP
 	}
 
 	ctx := context.Background()
-	if err := s.mikrotikAdaptor.SetInterfaceDisabledByName(ctx, interfaceName, true); err != nil {
+	if err := s.mikrotikAdaptor.ForServer(s.activeServerID).SetInterfaceDisabledByName(ctx, interfaceName, true); err != nil {
 		s.logAction(interfaceName, "1", description, detail, false, "ناموفق: "+err.Error(), now)
 		return
 	}
@@ -1244,7 +1329,7 @@ func (s *TunnelHealthService) attemptLevel1(interfaceName string, config TunnelP
 		wait = 2 * time.Second
 	}
 	time.Sleep(wait)
-	if err := s.mikrotikAdaptor.SetInterfaceDisabledByName(ctx, interfaceName, false); err != nil {
+	if err := s.mikrotikAdaptor.ForServer(s.activeServerID).SetInterfaceDisabledByName(ctx, interfaceName, false); err != nil {
 		s.logAction(interfaceName, "1", description, detail, false, "ناموفق در فعال‌سازی مجدد: "+err.Error(), now)
 		return
 	}
@@ -1262,7 +1347,7 @@ func (s *TunnelHealthService) attemptLevel1(interfaceName string, config TunnelP
 // treats that as "nothing to cache this tick," never as a reason to fail
 // the whole poll.
 func (s *TunnelHealthService) currentGatewayIP(interfaceName string) string {
-	routes, err := s.mikrotikAdaptor.FetchIPRoutes(context.Background())
+	routes, err := s.mikrotikAdaptor.ForServer(s.activeServerID).FetchIPRoutes(context.Background())
 	if err != nil {
 		return ""
 	}
@@ -1321,7 +1406,7 @@ func (s *TunnelHealthService) attemptLevel2(interfaceName string, config TunnelP
 	}
 
 	ctx := context.Background()
-	routes, err := s.mikrotikAdaptor.FetchIPRoutes(ctx)
+	routes, err := s.mikrotikAdaptor.ForServer(s.activeServerID).FetchIPRoutes(ctx)
 	if err != nil {
 		s.logAction(interfaceName, "2", description, "-", false, "ناموفق: خواندن جدول روتینگ ممکن نشد: "+err.Error(), now)
 		return
@@ -1343,7 +1428,7 @@ func (s *TunnelHealthService) attemptLevel2(interfaceName string, config TunnelP
 	// exact failure mode could occur).
 	var lastKnownGatewayIP string
 	var status model.TunnelHealthStatus
-	if err := s.db.Where("interface_name = ?", interfaceName).First(&status).Error; err == nil {
+	if err := s.db.Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).First(&status).Error; err == nil {
 		lastKnownGatewayIP = status.LastKnownGatewayIP
 	}
 
@@ -1378,7 +1463,7 @@ func (s *TunnelHealthService) attemptLevel2(interfaceName string, config TunnelP
 
 	var failedCount int
 	for _, routeID := range matchingRouteIDs {
-		if err := s.mikrotikAdaptor.SetRouteGateway(ctx, routeID, gatewayIP); err != nil {
+		if err := s.mikrotikAdaptor.ForServer(s.activeServerID).SetRouteGateway(ctx, routeID, gatewayIP); err != nil {
 			s.logger.Error("failed to switch route gateway during level 2 failover",
 				zap.String("interface", interfaceName), zap.String("route_id", routeID), zap.Error(err))
 			failedCount++
@@ -1440,7 +1525,7 @@ func (s *TunnelHealthService) attemptLevel3(interfaceName string, config TunnelP
 	}
 
 	ctx := context.Background()
-	routes, err := s.mikrotikAdaptor.FetchIPRoutes(ctx)
+	routes, err := s.mikrotikAdaptor.ForServer(s.activeServerID).FetchIPRoutes(ctx)
 	if err != nil {
 		s.logAction(interfaceName, "3", description, "-", false, "ناموفق: خواندن جدول روتینگ ممکن نشد: "+err.Error(), now)
 		return
@@ -1473,11 +1558,11 @@ func (s *TunnelHealthService) attemptLevel3(interfaceName string, config TunnelP
 	var createErr error
 	switch tunnelType {
 	case "gre":
-		_, createErr = s.mikrotikAdaptor.CreateGREInterface(ctx, newName, remoteAddr, localAddr)
+		_, createErr = s.mikrotikAdaptor.ForServer(s.activeServerID).CreateGREInterface(ctx, newName, remoteAddr, localAddr)
 	case "ipip":
-		_, createErr = s.mikrotikAdaptor.CreateIPIPInterface(ctx, newName, remoteAddr, localAddr)
+		_, createErr = s.mikrotikAdaptor.ForServer(s.activeServerID).CreateIPIPInterface(ctx, newName, remoteAddr, localAddr)
 	case "eoip":
-		_, createErr = s.mikrotikAdaptor.CreateEoIPInterface(ctx, newName, remoteAddr, localAddr)
+		_, createErr = s.mikrotikAdaptor.ForServer(s.activeServerID).CreateEoIPInterface(ctx, newName, remoteAddr, localAddr)
 	}
 	if createErr != nil {
 		s.logAction(interfaceName, "3", description, detail, false, "ناموفق: ساخت اینترفیس تانل جدید: "+createErr.Error(), now)
@@ -1491,7 +1576,7 @@ func (s *TunnelHealthService) attemptLevel3(interfaceName string, config TunnelP
 
 	var failedRoutes int
 	for _, dst := range destinations {
-		if _, err := s.mikrotikAdaptor.CreateRoute(ctx, dst, gatewayIP); err != nil {
+		if _, err := s.mikrotikAdaptor.ForServer(s.activeServerID).CreateRoute(ctx, dst, gatewayIP); err != nil {
 			s.logger.Error("failed to create route during level 3 new-tunnel provisioning",
 				zap.String("interface", interfaceName), zap.String("destination", dst), zap.Error(err))
 			failedRoutes++
@@ -1559,32 +1644,42 @@ const (
 // since pinging every configured backup gateway on every single poll
 // tick would be wasted load for a value (confidence that a rarely-used
 // standby path still works) that does not need minute-by-minute
-// freshness. Iterates every tunnel that currently has a policy with a
-// non-empty Level2.BackupGatewayIP configured -- a tunnel with no Level 2
-// configured yet has nothing to probe and is silently skipped.
+// freshness. Runs independently for EVERY active server, mirroring Poll's
+// own ForEachActiveServer loop -- see Poll's own doc comment for the
+// confirmed, reported multi-server gap this closes; before this change,
+// ProbeBackupPaths resolved and probed only a single "first active"
+// server's policies, same bug as Poll had. Within one server's pass,
+// iterates every tunnel that currently has a policy with a non-empty
+// Level2.BackupGatewayIP configured -- a tunnel with no Level 2 configured
+// yet has nothing to probe and is silently skipped.
 func (s *TunnelHealthService) ProbeBackupPaths() {
-	policies, err := s.policyService.List()
-	if err != nil {
-		s.logger.Error("failed to list tunnel policies for backup probe", zap.Error(err))
-		return
-	}
+	ForEachActiveServer(s.db, func(server model.Server) error {
+		s.activeServerID = server.ID
 
-	ctx := context.Background()
-	now := time.Now()
-	for _, policy := range policies {
-		config := s.policyService.Parse(&policy)
-		gatewayIP := strings.TrimSpace(config.Level2.BackupGatewayIP)
-		if gatewayIP == "" {
-			continue
+		policies, err := s.policyService.List(&server.ID)
+		if err != nil {
+			s.logger.Error("failed to list tunnel policies for backup probe", zap.Uint("server_id", server.ID), zap.Error(err))
+			return err
 		}
-		s.probeOneBackupPath(ctx, policy.InterfaceName, gatewayIP, now)
-	}
+
+		ctx := context.Background()
+		now := time.Now()
+		for _, policy := range policies {
+			config := s.policyService.Parse(&policy)
+			gatewayIP := strings.TrimSpace(config.Level2.BackupGatewayIP)
+			if gatewayIP == "" {
+				continue
+			}
+			s.probeOneBackupPath(ctx, policy.InterfaceName, gatewayIP, now)
+		}
+		return nil
+	})
 }
 
 func (s *TunnelHealthService) probeOneBackupPath(ctx context.Context, interfaceName, gatewayIP string, now time.Time) {
 	var reachable bool
 	var evidence string
-	results, err := s.mikrotikAdaptor.Ping(ctx, gatewayIP, backupProbePingCount)
+	results, err := s.mikrotikAdaptor.ForServer(s.activeServerID).Ping(ctx, gatewayIP, backupProbePingCount)
 	if err != nil {
 		evidence = "تست پینگ ناموفق بود: " + err.Error()
 	} else {
@@ -1602,6 +1697,7 @@ func (s *TunnelHealthService) probeOneBackupPath(ctx context.Context, interfaceN
 	}
 
 	probe := model.TunnelBackupProbeResult{
+		ServerID:        s.activeServerID,
 		InterfaceName:   interfaceName,
 		BackupGatewayIP: gatewayIP,
 		Reachable:       reachable,
@@ -1615,7 +1711,7 @@ func (s *TunnelHealthService) probeOneBackupPath(ctx context.Context, interfaceN
 
 	var toDelete []uint
 	s.db.Model(&model.TunnelBackupProbeResult{}).
-		Where("interface_name = ?", interfaceName).
+		Where("server_id = ? AND interface_name = ?", s.activeServerID, interfaceName).
 		Order("probed_at desc").
 		Offset(backupProbeRetention).
 		Pluck("id", &toDelete)
@@ -1638,13 +1734,17 @@ func (s *TunnelHealthService) probeOneBackupPath(ctx context.Context, interfaceN
 
 // ListBackupProbeResults returns the most recent nightly backup-probe
 // results (newest first) -- the panel's own read endpoint for this
-// capability.
-func (s *TunnelHealthService) ListBackupProbeResults(limit int) ([]model.TunnelBackupProbeResult, error) {
+// capability. serverID is optional, same convention as ListStatuses.
+func (s *TunnelHealthService) ListBackupProbeResults(serverID *uint, limit int) ([]model.TunnelBackupProbeResult, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	query := s.db.Order("probed_at desc").Limit(limit)
+	if serverID != nil {
+		query = query.Where("server_id = ?", *serverID)
+	}
 	var results []model.TunnelBackupProbeResult
-	if err := s.db.Order("probed_at desc").Limit(limit).Find(&results).Error; err != nil {
+	if err := query.Find(&results).Error; err != nil {
 		s.logger.Error("failed to list backup probe results", zap.Error(err))
 		return nil, err
 	}
@@ -1653,28 +1753,38 @@ func (s *TunnelHealthService) ListBackupProbeResults(limit int) ([]model.TunnelB
 
 // ListIncidentDiagnoses returns the most recent root-cause diagnoses
 // (newest first) -- the panel's own read endpoint for
-// diagnoseIncidentOnce's output.
-func (s *TunnelHealthService) ListIncidentDiagnoses(limit int) ([]model.TunnelIncidentDiagnosis, error) {
+// diagnoseIncidentOnce's output. serverID is optional, same convention as
+// ListStatuses.
+func (s *TunnelHealthService) ListIncidentDiagnoses(serverID *uint, limit int) ([]model.TunnelIncidentDiagnosis, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	query := s.db.Order("diagnosed_at desc").Limit(limit)
+	if serverID != nil {
+		query = query.Where("server_id = ?", *serverID)
+	}
 	var diagnoses []model.TunnelIncidentDiagnosis
-	if err := s.db.Order("diagnosed_at desc").Limit(limit).Find(&diagnoses).Error; err != nil {
+	if err := query.Find(&diagnoses).Error; err != nil {
 		s.logger.Error("failed to list tunnel incident diagnoses", zap.Error(err))
 		return nil, err
 	}
 	return diagnoses, nil
 }
 
-// ListHealthScoreHistory returns interfaceName's own recent health-score
-// samples (oldest first, so the panel can plot them directly as a trend
-// line without having to reverse the slice itself).
-func (s *TunnelHealthService) ListHealthScoreHistory(interfaceName string, limit int) ([]model.TunnelHealthScore, error) {
+// ListHealthScoreHistory returns one server's one interface's own recent
+// health-score samples (oldest first, so the panel can plot them directly
+// as a trend line without having to reverse the slice itself). serverID
+// is REQUIRED (not optional like the other List* methods above) -- unlike
+// a flat list page where mixing servers together is at worst confusing, a
+// single interface name is genuinely ambiguous across servers (two
+// different tunnels named "wg0" have two different trend lines), so there
+// is no sensible "all servers" reading for one named interface's history.
+func (s *TunnelHealthService) ListHealthScoreHistory(serverID uint, interfaceName string, limit int) ([]model.TunnelHealthScore, error) {
 	if limit <= 0 || limit > 500 {
 		limit = healthScoreHistoryRetention
 	}
 	var scores []model.TunnelHealthScore
-	if err := s.db.Where("interface_name = ?", interfaceName).
+	if err := s.db.Where("server_id = ? AND interface_name = ?", serverID, interfaceName).
 		Order("sampled_at desc").Limit(limit).Find(&scores).Error; err != nil {
 		s.logger.Error("failed to list tunnel health score history", zap.String("interface", interfaceName), zap.Error(err))
 		return nil, err
@@ -1722,20 +1832,23 @@ const (
 	incidentPatternMinCorrelatedCount = 2
 )
 
-// BuildIncidentPatternReport queries TunnelHealthEvent for the lookback
-// window and returns a ready-to-send Persian report body, or "" if
-// nothing in the window meets either pattern's own minimum threshold --
-// callers should simply not send a notification at all in that case (see
-// NotifyTunnelIncidentPatternReport's own doc comment), rather than
-// spamming an admin with an empty "nothing interesting happened" message
-// every single week.
-func (s *TunnelHealthService) BuildIncidentPatternReport(now time.Time) string {
+// BuildIncidentPatternReport queries serverID's own TunnelHealthEvent rows
+// for the lookback window and returns a ready-to-send Persian report body,
+// or "" if nothing in the window meets either pattern's own minimum
+// threshold -- callers should simply not send a notification at all in
+// that case (see NotifyTunnelIncidentPatternReport's own doc comment),
+// rather than spamming an admin with an empty "nothing interesting
+// happened" message every single week. Scoped to one server (not global)
+// so two different servers' same-named interfaces are never falsely
+// correlated with each other, and so a flap count never conflates two
+// unrelated tunnels that merely happen to share a name.
+func (s *TunnelHealthService) BuildIncidentPatternReport(serverID uint, now time.Time) string {
 	since := now.Add(-incidentPatternLookback)
 	var events []model.TunnelHealthEvent
-	if err := s.db.Where("from_status = ? AND to_status != ? AND to_status != ? AND detected_at >= ?",
-		"healthy", "healthy", "degrading_warning", since).
+	if err := s.db.Where("server_id = ? AND from_status = ? AND to_status != ? AND to_status != ? AND detected_at >= ?",
+		serverID, "healthy", "healthy", "degrading_warning", since).
 		Order("detected_at asc").Find(&events).Error; err != nil {
-		s.logger.Error("failed to load tunnel health events for pattern report", zap.Error(err))
+		s.logger.Error("failed to load tunnel health events for pattern report", zap.Uint("server_id", serverID), zap.Error(err))
 		return ""
 	}
 	if len(events) == 0 {
@@ -1821,8 +1934,13 @@ func (s *TunnelHealthService) BuildIncidentPatternReport(now time.Time) string {
 }
 
 // SendIncidentPatternReport is the scheduled job entry point for the
-// weekly digest -- builds the report and only actually notifies the
-// admin when there is something worth reporting.
+// weekly digest -- builds and sends one report per active server (see
+// BuildIncidentPatternReport's own doc comment on why this is scoped per
+// server rather than global), only actually notifying the admin for a
+// given server when there is something worth reporting on it. The
+// server's own name is prefixed onto the report body whenever more than
+// one server is registered, so the admin can tell which server a
+// chronic-flapper/correlated-pair callout refers to.
 func (s *TunnelHealthService) SendIncidentPatternReport() {
 	if s.botNotifier == nil || s.settings == nil {
 		return
@@ -1831,12 +1949,23 @@ func (s *TunnelHealthService) SendIncidentPatternReport() {
 	if err != nil || settings.AdminChatID == "" {
 		return
 	}
+
+	var servers []model.Server
+	s.db.Find(&servers)
+	multiServer := len(servers) > 1
+
 	now := time.Now()
-	report := s.BuildIncidentPatternReport(now)
-	if report == "" {
-		return
-	}
-	s.botNotifier.NotifyTunnelIncidentPatternReport(settings, report, now)
+	ForEachActiveServer(s.db, func(server model.Server) error {
+		report := s.BuildIncidentPatternReport(server.ID, now)
+		if report == "" {
+			return nil
+		}
+		if multiServer {
+			report = fmt.Sprintf("سرور: %s\n\n%s", server.Name, report)
+		}
+		s.botNotifier.NotifyTunnelIncidentPatternReport(settings, report, now)
+		return nil
+	})
 }
 
 // logAction is the single write path for TunnelActionLog -- every
@@ -1844,6 +1973,7 @@ func (s *TunnelHealthService) SendIncidentPatternReport() {
 // dry-run/live distinction is always recorded consistently.
 func (s *TunnelHealthService) logAction(interfaceName, level, description, detail string, simulated bool, result string, now time.Time) {
 	action := model.TunnelActionLog{
+		ServerID:           s.activeServerID,
 		InterfaceName:      interfaceName,
 		Level:              level,
 		CommandDescription: description,

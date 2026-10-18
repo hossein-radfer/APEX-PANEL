@@ -139,10 +139,12 @@ export const setResellerBillingTiers = async ({
 }
 
 export const fetchAssignedUserManagerGroups = async (
-  resellerId: number
+  resellerId: number,
+  serverId?: number
 ): Promise<AssignedUserManagerGroups> => {
   const { data } = await axiosInstance.get(
-    `/reseller/${resellerId}/user-manager-groups`
+    `/reseller/${resellerId}/user-manager-groups`,
+    { params: serverId !== undefined ? { server_id: serverId } : undefined }
   )
   const parsed = AssignedUserManagerGroupsResponseSchema.parse(data)
   return parsed.data || []
@@ -150,21 +152,26 @@ export const fetchAssignedUserManagerGroups = async (
 
 export const setAssignedUserManagerGroups = async ({
   resellerId,
+  serverId,
   groupNames,
 }: {
   resellerId: number
+  serverId?: number
   groupNames: string[]
 }): Promise<void> => {
   await axiosInstance.put(`/reseller/${resellerId}/user-manager-groups`, {
+    server_id: serverId,
     groupNames,
   })
 }
 
 export const fetchAssignedUserManagerProfiles = async (
-  resellerId: number
+  resellerId: number,
+  serverId?: number
 ): Promise<AssignedUserManagerProfiles> => {
   const { data } = await axiosInstance.get(
-    `/reseller/${resellerId}/user-manager-profiles`
+    `/reseller/${resellerId}/user-manager-profiles`,
+    { params: serverId !== undefined ? { server_id: serverId } : undefined }
   )
   const parsed = AssignedUserManagerProfilesResponseSchema.parse(data)
   return parsed.data || []
@@ -172,12 +179,15 @@ export const fetchAssignedUserManagerProfiles = async (
 
 export const setAssignedUserManagerProfiles = async ({
   resellerId,
+  serverId,
   profileNames,
 }: {
   resellerId: number
+  serverId?: number
   profileNames: string[]
 }): Promise<void> => {
   await axiosInstance.put(`/reseller/${resellerId}/user-manager-profiles`, {
+    server_id: serverId,
     profileNames,
   })
 }

@@ -1,9 +1,10 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BulkImportAccountsResult } from '@/schema/user-manager.ts'
 import { UploadIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { useBulkImportUserManagerAccountsMutation } from '@/hooks/user-manager/useBulkImportUserManagerAccountsMutation.ts'
 import { useBulkImportUserManagerAccountsForResellerMutation } from '@/hooks/user-manager/useBulkImportUserManagerAccountsForResellerMutation.ts'
+import { useServersListQuery } from '@/hooks/servers/useServersListQuery.ts'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,6 +16,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 type Props = {
   open: boolean
@@ -30,6 +38,20 @@ export function BulkImportDialog({ open, onOpenChange, targetResellerId }: Props
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [result, setResult] = useState<BulkImportAccountsResult | null>(null)
+
+  // BulkImportAccounts matches an existing RouterOS account by username on
+  // exactly one server -- shown only once there's more than one to choose
+  // between; auto-selects the lone server otherwise, matching
+  // InterfaceForm/AccountForm's identical convention.
+  const { data: serversList = [] } = useServersListQuery(open)
+  const [selectedServerId, setSelectedServerId] = useState<number | undefined>(
+    undefined
+  )
+  useEffect(() => {
+    if (open && selectedServerId === undefined && serversList.length >= 1) {
+      setSelectedServerId(serversList[0].id)
+    }
+  }, [open, selectedServerId, serversList])
 
   const bulkImport = useBulkImportUserManagerAccountsMutation()
   const bulkImportForReseller = useBulkImportUserManagerAccountsForResellerMutation()
@@ -57,8 +79,12 @@ export function BulkImportDialog({ open, onOpenChange, targetResellerId }: Props
           ? await bulkImportForReseller.mutateAsync({
               resellerId: targetResellerId,
               file: selectedFile,
+              serverId: selectedServerId,
             })
-          : await bulkImport.mutateAsync(selectedFile)
+          : await bulkImport.mutateAsync({
+              file: selectedFile,
+              serverId: selectedServerId,
+            })
       setResult(importResult)
       toast.success(
         `وارد کردن تکمیل شد: ${importResult.imported} وارد شد، ${importResult.already_imported} به‌روزرسانی شد.`,
@@ -94,6 +120,26 @@ export function BulkImportDialog({ open, onOpenChange, targetResellerId }: Props
         </DialogHeader>
 
         <div className='space-y-4'>
+          {serversList.length > 1 && (
+            <div className='space-y-2'>
+              <Label>سرور</Label>
+              <Select
+                value={selectedServerId ? String(selectedServerId) : undefined}
+                onValueChange={(value) => setSelectedServerId(Number(value))}
+              >
+                <SelectTrigger className='w-full'>
+                  <SelectValue placeholder='یک سرور انتخاب کنید' />
+                </SelectTrigger>
+                <SelectContent>
+                  {serversList.map((server) => (
+                    <SelectItem key={server.id} value={String(server.id)}>
+                      {server.name} ({server.ip_address})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className='space-y-2'>
             <Label htmlFor='bulk-import-file'>فایل TXT</Label>
             <input

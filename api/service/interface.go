@@ -55,34 +55,82 @@ func (i *WgInterface) GetInterfaces(allowedIDs []uint) (*[]schema.InterfaceRespo
 		return nil, err
 	}
 
+	serverNames := i.serverNamesByID()
+
 	var wgInterfaces []schema.InterfaceResponse
 	for _, iface := range interfaces {
-		mtInterface, err := i.mikrotikAdaptor.FetchWgInterface(context.Background(), iface.InterfaceID)
+		mtInterface, err := i.mikrotikAdaptor.ForServer(iface.ServerID).FetchWgInterface(context.Background(), iface.InterfaceID)
 		if err != nil {
 			i.logger.Error("failed to fetch wireguard interface from Mikrotik", zap.String("interfaceID", iface.InterfaceID), zap.Error(err))
 			return nil, fmt.Errorf("failed to fetch wireguard interface from Mikrotik: %w", err)
 		}
-		wgInterface := i.transformInterfaceToResponse(iface, mtInterface.MTU, *mtInterface.Running)
+		wgInterface := i.transformInterfaceToResponse(iface, mtInterface.MTU, *mtInterface.Running, serverNames[iface.ServerID])
 		wgInterfaces = append(wgInterfaces, wgInterface)
 	}
 
 	return &wgInterfaces, nil
 }
 
+// resolveServerID picks the server a new Interface/Peer/UserManagerAccount
+// should be created on: reqServerID if the caller supplied one (the
+// multi-server-aware UI path, once more than one server is registered), or
+// this install's one server if not (the existing single-server-install
+// path -- the backfill that first introduced ServerID guarantees exactly
+// one Server row exists whenever a pre-multi-server database is upgraded).
+// Returns an error if reqServerID is nil AND there is not exactly one
+// server to fall back to, rather than silently guessing which of several
+// servers was meant.
+func resolveServerID(db *gorm.DB, reqServerID *uint) (uint, error) {
+	if reqServerID != nil {
+		return *reqServerID, nil
+	}
+	var servers []model.Server
+	if err := db.Find(&servers).Error; err != nil {
+		return 0, err
+	}
+	if len(servers) != 1 {
+		return 0, fmt.Errorf("server_id is required when more than one server is registered (found %d)", len(servers))
+	}
+	return servers[0].ID, nil
+}
+
+// serverNamesByID returns every registered server's Name keyed by ID, for
+// denormalizing InterfaceResponse.ServerName without an N+1 query per
+// interface.
+func (i *WgInterface) serverNamesByID() map[uint]string {
+	var servers []model.Server
+	if err := i.db.Find(&servers).Error; err != nil {
+		i.logger.Warn("failed to fetch servers for name lookup", zap.Error(err))
+		return map[uint]string{}
+	}
+	names := make(map[uint]string, len(servers))
+	for _, s := range servers {
+		names[s.ID] = s.Name
+	}
+	return names
+}
+
 func (i *WgInterface) CreateInterface(req *schema.CreateInterfaceRequest) (*schema.InterfaceResponse, error) {
+	serverID, err := resolveServerID(i.db, req.ServerID)
+	if err != nil {
+		i.logger.Error("failed to resolve server for new interface", zap.Error(err))
+		return nil, err
+	}
+
 	wgInterface := &mikrotik.WireGuardInterface{
 		Name:       req.Name,
 		Comment:    req.Comment,
 		ListenPort: req.ListenPort,
 	}
 
-	mtInterface, err := i.mikrotikAdaptor.CreateWgInterface(context.Background(), *wgInterface)
+	mtInterface, err := i.mikrotikAdaptor.ForServer(serverID).CreateWgInterface(context.Background(), *wgInterface)
 	if err != nil {
 		i.logger.Error("failed to create wireguard interface", zap.Error(err))
 		return nil, err
 	}
 
 	dbInterface := model.Interface{
+		ServerID:    serverID,
 		InterfaceID: mtInterface.ID,
 		Comment:     wgInterface.Comment,
 		Name:        wgInterface.Name,
@@ -96,7 +144,7 @@ func (i *WgInterface) CreateInterface(req *schema.CreateInterfaceRequest) (*sche
 		return nil, err
 	}
 
-	transformedInterface := i.transformInterfaceToResponse(dbInterface, mtInterface.MTU, *mtInterface.Running)
+	transformedInterface := i.transformInterfaceToResponse(dbInterface, mtInterface.MTU, *mtInterface.Running, i.serverNamesByID()[serverID])
 	return &transformedInterface, nil
 }
 
@@ -113,7 +161,7 @@ func (i *WgInterface) ToggleInterfaceStatus(id uint) error {
 		Disabled: disabled,
 	}
 
-	if _, err := i.mikrotikAdaptor.UpdateWgInterface(context.Background(), iface.InterfaceID, wgInterface); err != nil {
+	if _, err := i.mikrotikAdaptor.ForServer(iface.ServerID).UpdateWgInterface(context.Background(), iface.InterfaceID, wgInterface); err != nil {
 		i.logger.Error("failed to update wireguard interface status", zap.Error(err))
 		return fmt.Errorf("failed to update wireguard interface status: %w", err)
 	}
@@ -145,7 +193,7 @@ func (i *WgInterface) UpdateInterface(id uint, req *schema.UpdateInterfaceReques
 
 	wgInterface.Name = req.Name
 
-	mtInterface, err := i.mikrotikAdaptor.UpdateWgInterface(context.Background(), iface.InterfaceID, wgInterface)
+	mtInterface, err := i.mikrotikAdaptor.ForServer(iface.ServerID).UpdateWgInterface(context.Background(), iface.InterfaceID, wgInterface)
 	if err != nil {
 		i.logger.Error("failed to update wireguard interface", zap.Error(err))
 		return nil, fmt.Errorf("failed to update wireguard interface: %w", err)
@@ -160,7 +208,7 @@ func (i *WgInterface) UpdateInterface(id uint, req *schema.UpdateInterfaceReques
 		return nil, fmt.Errorf("failed to update wireguard interface in database")
 	}
 
-	transformedInterface := i.transformInterfaceToResponse(iface, mtInterface.MTU, *mtInterface.Running)
+	transformedInterface := i.transformInterfaceToResponse(iface, mtInterface.MTU, *mtInterface.Running, i.serverNamesByID()[iface.ServerID])
 	return &transformedInterface, nil
 }
 
@@ -180,7 +228,7 @@ func (i *WgInterface) DeleteInterface(id uint) error {
 		return ErrInterfaceHasIPPool
 	}
 
-	if err := i.mikrotikAdaptor.DeleteWgInterface(context.Background(), iface.InterfaceID); err != nil {
+	if err := i.mikrotikAdaptor.ForServer(iface.ServerID).DeleteWgInterface(context.Background(), iface.InterfaceID); err != nil {
 		i.logger.Error("failed to delete wireguard interface from Mikrotik", zap.Error(err))
 		return fmt.Errorf("failed to delete wireguard interface from Mikrotik: %w", err)
 	}
@@ -212,9 +260,11 @@ func (i *WgInterface) GetInterfacesData() (*schema.InterfaceStatsResponse, error
 	}, nil
 }
 
-func (i *WgInterface) transformInterfaceToResponse(wgInterface model.Interface, mtu, status string) schema.InterfaceResponse {
+func (i *WgInterface) transformInterfaceToResponse(wgInterface model.Interface, mtu, status, serverName string) schema.InterfaceResponse {
 	return schema.InterfaceResponse{
 		Id:          wgInterface.ID,
+		ServerID:    wgInterface.ServerID,
+		ServerName:  serverName,
 		InterfaceID: wgInterface.InterfaceID,
 		Disabled:    wgInterface.Disabled,
 		Comment:     wgInterface.Comment,

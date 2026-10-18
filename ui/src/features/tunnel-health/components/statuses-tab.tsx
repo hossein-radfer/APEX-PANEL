@@ -37,10 +37,10 @@ function formatHandshakeAge(seconds: number | null | undefined): string {
 // DiscoveredTunnelInterfaces' own doc comment for how these are told
 // apart) CURRENT computed health -- refetched every 30s so an admin
 // watching this page sees a state change without a manual reload.
-export function StatusesTab() {
+export function StatusesTab({ serverId }: { serverId?: number }) {
   const { data: rows = [], isLoading } = useQuery({
-    queryKey: ['tunnel_health_statuses'],
-    queryFn: () => fetchTunnelHealthStatuses(),
+    queryKey: ['tunnel_health_statuses', serverId],
+    queryFn: () => fetchTunnelHealthStatuses(serverId),
     refetchInterval: 30_000,
   })
 

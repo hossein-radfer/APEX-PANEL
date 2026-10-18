@@ -3,9 +3,63 @@ package service
 import (
 	"errors"
 
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+
 	"github.com/maahdima/mwp/api/adaptor/mikrotik"
+	"github.com/maahdima/mwp/api/dataservice/model"
 	"github.com/maahdima/mwp/api/http/schema"
 )
+
+// GetSyncInterfacesAllServers runs GetSyncInterfaces against every
+// registered server and concatenates the results -- the sync preview page
+// has no per-server filter yet, so it shows every server's live interfaces
+// in one list. Each row carries its own ServerID/ServerName (set here, since
+// SyncService itself only knows its numeric serverID, not the server's
+// display name) so the UI can label which server a row belongs to and so a
+// later "sync selected" call can be pinned back to the right one.
+func GetSyncInterfacesAllServers(db *gorm.DB, factory SyncServiceFactory) ([]schema.SyncInterfacePreviewResponse, error) {
+	var servers []model.Server
+	if err := db.Find(&servers).Error; err != nil {
+		return nil, err
+	}
+	result := make([]schema.SyncInterfacePreviewResponse, 0)
+	for _, server := range servers {
+		ifaces, err := factory(server.ID).GetSyncInterfaces()
+		if err != nil {
+			zap.L().Named("SyncService").Error("failed to fetch sync interfaces for server", zap.Uint("server_id", server.ID), zap.Error(err))
+			continue
+		}
+		for i := range ifaces {
+			ifaces[i].ServerID = server.ID
+			ifaces[i].ServerName = server.Name
+		}
+		result = append(result, ifaces...)
+	}
+	return result, nil
+}
+
+// GetSyncPeersAllServers mirrors GetSyncInterfacesAllServers for peers.
+func GetSyncPeersAllServers(db *gorm.DB, factory SyncServiceFactory, interfaceName string) ([]schema.SyncPeerPreviewResponse, error) {
+	var servers []model.Server
+	if err := db.Find(&servers).Error; err != nil {
+		return nil, err
+	}
+	result := make([]schema.SyncPeerPreviewResponse, 0)
+	for _, server := range servers {
+		peers, err := factory(server.ID).GetSyncPeers(interfaceName)
+		if err != nil {
+			zap.L().Named("SyncService").Error("failed to fetch sync peers for server", zap.Uint("server_id", server.ID), zap.Error(err))
+			continue
+		}
+		for i := range peers {
+			peers[i].ServerID = server.ID
+			peers[i].ServerName = server.Name
+		}
+		result = append(result, peers...)
+	}
+	return result, nil
+}
 
 func (s *SyncService) GetSyncInterfaces() ([]schema.SyncInterfacePreviewResponse, error) {
 	ifaces, err := s.fetchMikrotikInterfaces()
@@ -33,6 +87,23 @@ func (s *SyncService) GetSyncPeers(interfaceName string) ([]schema.SyncPeerPrevi
 	}
 
 	return mapSyncPeers(peers), nil
+}
+
+// SyncSelectedInterfacesForServer runs the selection against exactly the
+// server it came from -- the preview list's rows each carry the ServerID
+// they were fetched from (see GetSyncInterfacesAllServers), and a RouterOS
+// ".id" like "*3" is only unique within one router, so applying a selection
+// to every server (as this used to do) risked a no-op-by-luck rather than a
+// guaranteed-correct match. Pinning to one server makes the match exact
+// instead of relying on other servers' IDs happening not to collide.
+func SyncSelectedInterfacesForServer(factory SyncServiceFactory, serverID uint, interfaceIDs []string) error {
+	return factory(serverID).SyncSelectedInterfaces(interfaceIDs)
+}
+
+// SyncSelectedPeersForServer mirrors SyncSelectedInterfacesForServer for
+// peers.
+func SyncSelectedPeersForServer(factory SyncServiceFactory, serverID uint, peerIDs []string) error {
+	return factory(serverID).SyncSelectedPeers(peerIDs)
 }
 
 func (s *SyncService) SyncSelectedInterfaces(interfaceIDs []string) error {

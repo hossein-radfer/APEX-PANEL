@@ -29,29 +29,33 @@ import {
 } from '@/schema/tunnel-health.ts'
 import axiosInstance from '@/api/axios-instance.ts'
 
-export const fetchTunnelHealthStatuses = async (): Promise<
-  TunnelHealthStatus[]
-> => {
-  const { data } = await axiosInstance.get('/tunnel-health/statuses')
+export const fetchTunnelHealthStatuses = async (
+  serverId?: number
+): Promise<TunnelHealthStatus[]> => {
+  const { data } = await axiosInstance.get('/tunnel-health/statuses', {
+    params: { server_id: serverId },
+  })
   const parsed = TunnelHealthStatusesResponseSchema.parse(data)
   return parsed.data || []
 }
 
 export const fetchTunnelHealthEvents = async (
-  limit = 100
+  limit = 100,
+  serverId?: number
 ): Promise<TunnelHealthEvent[]> => {
   const { data } = await axiosInstance.get('/tunnel-health/events', {
-    params: { limit },
+    params: { limit, server_id: serverId },
   })
   const parsed = TunnelHealthEventsResponseSchema.parse(data)
   return parsed.data || []
 }
 
 export const fetchTunnelActionLogs = async (
-  limit = 100
+  limit = 100,
+  serverId?: number
 ): Promise<TunnelActionLog[]> => {
   const { data } = await axiosInstance.get('/tunnel-health/actions', {
-    params: { limit },
+    params: { limit, server_id: serverId },
   })
   const parsed = TunnelActionLogsResponseSchema.parse(data)
   return parsed.data || []
@@ -74,8 +78,12 @@ export const updateTunnelAiSettings = async (
   return parsed.data
 }
 
-export const fetchTunnelPolicies = async (): Promise<TunnelPolicy[]> => {
-  const { data } = await axiosInstance.get('/tunnel-health/policies')
+export const fetchTunnelPolicies = async (
+  serverId?: number
+): Promise<TunnelPolicy[]> => {
+  const { data } = await axiosInstance.get('/tunnel-health/policies', {
+    params: { server_id: serverId },
+  })
   const parsed = TunnelPoliciesResponseSchema.parse(data)
   return parsed.data || []
 }
@@ -117,45 +125,56 @@ export const removeRedlineEntry = async (id: number): Promise<void> => {
   await axiosInstance.delete(`/tunnel-health/redline/${id}`)
 }
 
-export const fetchLatestGraph = async (): Promise<TunnelGraph | null> => {
-  const { data } = await axiosInstance.get('/tunnel-health/graph')
+export const fetchLatestGraph = async (
+  serverId: number
+): Promise<TunnelGraph | null> => {
+  const { data } = await axiosInstance.get('/tunnel-health/graph', {
+    params: { server_id: serverId },
+  })
   const parsed = GraphResponseSchema.parse(data)
   return parsed.data
 }
 
-export const fetchTunnelMap = async (): Promise<TunnelMap | null> => {
-  const { data } = await axiosInstance.get('/tunnel-health/tunnel-map')
+export const fetchTunnelMap = async (
+  serverId: number
+): Promise<TunnelMap | null> => {
+  const { data } = await axiosInstance.get('/tunnel-health/tunnel-map', {
+    params: { server_id: serverId },
+  })
   const parsed = TunnelMapResponseSchema.parse(data)
   return parsed.data
 }
 
 export const fetchTunnelHealthScoreHistory = async (
+  serverId: number,
   interfaceName: string,
   limit = 20
 ): Promise<TunnelHealthScorePoint[]> => {
   const { data } = await axiosInstance.get('/tunnel-health/health-scores', {
-    params: { interface_name: interfaceName, limit },
+    params: { server_id: serverId, interface_name: interfaceName, limit },
   })
   const parsed = TunnelHealthScoresResponseSchema.parse(data)
   return parsed.data || []
 }
 
 export const fetchTunnelIncidentDiagnoses = async (
-  limit = 100
+  limit = 100,
+  serverId?: number
 ): Promise<TunnelIncidentDiagnosis[]> => {
   const { data } = await axiosInstance.get(
     '/tunnel-health/incident-diagnoses',
-    { params: { limit } }
+    { params: { limit, server_id: serverId } }
   )
   const parsed = TunnelIncidentDiagnosesResponseSchema.parse(data)
   return parsed.data || []
 }
 
 export const fetchTunnelBackupProbeResults = async (
-  limit = 100
+  limit = 100,
+  serverId?: number
 ): Promise<TunnelBackupProbeResult[]> => {
   const { data } = await axiosInstance.get('/tunnel-health/backup-probes', {
-    params: { limit },
+    params: { limit, server_id: serverId },
   })
   const parsed = TunnelBackupProbeResultsResponseSchema.parse(data)
   return parsed.data || []

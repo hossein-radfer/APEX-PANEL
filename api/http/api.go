@@ -25,7 +25,7 @@ func SetupMwpAPI(
 	excelGeneratorService *service.ExcelGenerator,
 	deviceDataService *service.DeviceData,
 	trafficCalculator *traffic.Calculator,
-	syncService *service.SyncService,
+	syncController *SyncController,
 	resellerService *service.Reseller,
 	walletService *service.Wallet,
 	pricePlanService *service.PricePlan,
@@ -105,7 +105,6 @@ func SetupMwpAPI(
 		trafficCalculator,
 	)
 	deviceInfoController := NewDeviceDataController(deviceDataService, trafficCalculator)
-	syncController := NewSyncController(syncService)
 	userController := NewUserController(peerService, configGeneratorService, qrCodeGeneratorService, userManagerService, userManagerConfigFileService, userManagerProtocolFileService)
 	resellerController := NewResellerController(resellerService, resellerBillingService)
 	faoximaController := NewFaoximaController(faoximaProvisionerService)
@@ -537,12 +536,12 @@ func setupUserManagerProtocolConfigRoutes(router *echo.Group, jwtConfig echojwt.
 
 	protocolConfigGroup.GET("", userManagerProtocolConfigController.ListProtocolConfigs)
 	protocolConfigGroup.PUT("", userManagerProtocolConfigController.UpsertProtocolConfig)
-	protocolConfigGroup.POST("/:protocol/certificate", userManagerProtocolConfigController.UploadProtocolCertificateFile)
-	protocolConfigGroup.GET("/:protocol/certificate", userManagerProtocolConfigController.DownloadProtocolCertificateFile)
-	protocolConfigGroup.DELETE("/:protocol/certificate", userManagerProtocolConfigController.DeleteProtocolCertificateFile)
-	protocolConfigGroup.POST("/:protocol/client-app", userManagerProtocolConfigController.UploadProtocolClientAppFile)
-	protocolConfigGroup.GET("/:protocol/client-app", userManagerProtocolConfigController.DownloadProtocolClientAppFile)
-	protocolConfigGroup.DELETE("/:protocol/client-app", userManagerProtocolConfigController.DeleteProtocolClientAppFile)
+	protocolConfigGroup.POST("/:protocol/:serverID/certificate", userManagerProtocolConfigController.UploadProtocolCertificateFile)
+	protocolConfigGroup.GET("/:protocol/:serverID/certificate", userManagerProtocolConfigController.DownloadProtocolCertificateFile)
+	protocolConfigGroup.DELETE("/:protocol/:serverID/certificate", userManagerProtocolConfigController.DeleteProtocolCertificateFile)
+	protocolConfigGroup.POST("/:protocol/:serverID/client-app", userManagerProtocolConfigController.UploadProtocolClientAppFile)
+	protocolConfigGroup.GET("/:protocol/:serverID/client-app", userManagerProtocolConfigController.DownloadProtocolClientAppFile)
+	protocolConfigGroup.DELETE("/:protocol/:serverID/client-app", userManagerProtocolConfigController.DeleteProtocolClientAppFile)
 }
 
 func setupLogRoutes(router *echo.Group, jwtConfig echojwt.Config, logController *LogController) {

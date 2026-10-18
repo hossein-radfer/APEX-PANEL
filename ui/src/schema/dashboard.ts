@@ -76,6 +76,13 @@ export const deviceDataSchema = z.object({
       dns_servers: z.string(),
     })
   ),
+  // Names which one physical server DeviceIdentity/DeviceInfo/
+  // DeviceIPv4Address/DNSConfig describe -- these four widgets have always
+  // shown exactly one router, never a cross-server aggregate (see
+  // DeviceData.resolveDefaultServerID's own doc comment on the Go side).
+  // Optional/0 when no server could be resolved.
+  device_server_id: z.number().optional(),
+  device_server_name: z.string().optional(),
 })
 
 export const trafficUsageSchema = z.object({

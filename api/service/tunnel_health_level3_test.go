@@ -97,6 +97,7 @@ func openTunnelHealthLevel3TestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to open test db: %v", err)
 	}
 	if err := db.AutoMigrate(
+		&model.Server{},
 		&model.SystemConfig{},
 		&model.TunnelPolicy{},
 		&model.TunnelActionLog{},

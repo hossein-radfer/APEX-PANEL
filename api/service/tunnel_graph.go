@@ -200,19 +200,24 @@ func (d *discoveryData) tunnelGatewayNames() map[string]bool {
 	return gateways
 }
 
-// Poll is the scheduled job entry point -- resolves the single active
-// server (this codebase's own established "one active server" convention,
-// see model.Server.IsActive) and runs one discovery+graph-build tick
-// against it. A no-active-server state (fresh install, or every server
-// disabled) is a silent no-op, not an error -- same convention as this
-// codebase's other server-scoped background jobs.
+// Poll is the scheduled job entry point -- runs one discovery+graph-build
+// tick against EVERY active server (model.Server.IsActive), not just one.
+// Confirmed, reported multi-server gap this closes: this used to resolve
+// only the single "first active" server (db.Where("is_active = ?",
+// true).First(...)), so every server after that one was never discovered
+// at all -- no graph, no tunnel detection, no health monitoring,
+// completely silently (no error, nothing in any log an admin would think
+// to check). ForEachActiveServer's own "one dead source never blocks the
+// rest" convention means a discovery failure on one server still lets
+// every other server's tick proceed on schedule.
 func (s *TunnelGraphService) Poll() {
-	var server model.Server
-	if err := s.db.Where("is_active = ?", true).First(&server).Error; err != nil {
-		return
-	}
-	if err := s.Discover(server.ID); err != nil {
-		s.logger.Error("tunnel graph discovery tick failed", zap.Uint("server_id", server.ID), zap.Error(err))
+	errs := ForEachActiveServer(s.db, func(server model.Server) error {
+		return s.Discover(server.ID)
+	})
+	for serverID, err := range errs {
+		if err != nil {
+			s.logger.Error("tunnel graph discovery tick failed", zap.Uint("server_id", serverID), zap.Error(err))
+		}
 	}
 }
 
@@ -225,7 +230,7 @@ func (s *TunnelGraphService) Poll() {
 // service in this codebase's own "one active server" convention).
 func (s *TunnelGraphService) Discover(serverID uint) error {
 	ctx := context.Background()
-	data, err := s.fetchAll(ctx)
+	data, err := s.fetchAll(ctx, serverID)
 	if err != nil {
 		s.logger.Error("failed to fetch discovery data", zap.Error(err))
 		return err
@@ -256,56 +261,57 @@ func (s *TunnelGraphService) Discover(serverID uint) error {
 // this falls back to /ip/route (present on both v6 and v7) rather than
 // treating the whole discovery tick as failed -- a v6 server can still
 // build a graph, just via the older route-table view.
-func (s *TunnelGraphService) fetchAll(ctx context.Context) (*discoveryData, error) {
+func (s *TunnelGraphService) fetchAll(ctx context.Context, serverID uint) (*discoveryData, error) {
 	data := &discoveryData{}
 	var err error
+	adaptor := s.mikrotikAdaptor.ForServer(serverID)
 
-	if data.Pools, err = s.mikrotikAdaptor.FetchIPPools(ctx); err != nil {
+	if data.Pools, err = adaptor.FetchIPPools(ctx); err != nil {
 		return nil, err
 	}
-	if data.Addresses, err = s.mikrotikAdaptor.FetchIPv4Addresses(ctx); err != nil {
+	if data.Addresses, err = adaptor.FetchIPv4Addresses(ctx); err != nil {
 		return nil, err
 	}
-	if data.NatRules, err = s.mikrotikAdaptor.FetchFirewallNatRules(ctx); err != nil {
+	if data.NatRules, err = adaptor.FetchFirewallNatRules(ctx); err != nil {
 		return nil, err
 	}
-	if data.MangleRules, err = s.mikrotikAdaptor.FetchFirewallMangleRules(ctx); err != nil {
+	if data.MangleRules, err = adaptor.FetchFirewallMangleRules(ctx); err != nil {
 		return nil, err
 	}
-	if data.FilterRules, err = s.mikrotikAdaptor.FetchFirewallFilterRules(ctx); err != nil {
+	if data.FilterRules, err = adaptor.FetchFirewallFilterRules(ctx); err != nil {
 		return nil, err
 	}
-	if data.AddressList, err = s.mikrotikAdaptor.FetchFirewallAddressList(ctx); err != nil {
+	if data.AddressList, err = adaptor.FetchFirewallAddressList(ctx); err != nil {
 		return nil, err
 	}
-	if data.RoutingTables, err = s.mikrotikAdaptor.FetchRoutingTables(ctx); err != nil {
+	if data.RoutingTables, err = adaptor.FetchRoutingTables(ctx); err != nil {
 		return nil, err
 	}
-	if data.Bridges, err = s.mikrotikAdaptor.FetchBridges(ctx); err != nil {
+	if data.Bridges, err = adaptor.FetchBridges(ctx); err != nil {
 		return nil, err
 	}
-	if data.BridgePorts, err = s.mikrotikAdaptor.FetchBridgePorts(ctx); err != nil {
+	if data.BridgePorts, err = adaptor.FetchBridgePorts(ctx); err != nil {
 		return nil, err
 	}
-	if data.WgInterfaces, err = s.mikrotikAdaptor.FetchWgInterfaces(ctx); err != nil {
+	if data.WgInterfaces, err = adaptor.FetchWgInterfaces(ctx); err != nil {
 		return nil, err
 	}
-	if data.GreInterfaces, err = s.mikrotikAdaptor.FetchGREInterfaces(ctx); err != nil {
+	if data.GreInterfaces, err = adaptor.FetchGREInterfaces(ctx); err != nil {
 		return nil, err
 	}
-	if data.IpipInterfaces, err = s.mikrotikAdaptor.FetchIPIPInterfaces(ctx); err != nil {
+	if data.IpipInterfaces, err = adaptor.FetchIPIPInterfaces(ctx); err != nil {
 		return nil, err
 	}
-	if data.EoipInterfaces, err = s.mikrotikAdaptor.FetchEoIPInterfaces(ctx); err != nil {
+	if data.EoipInterfaces, err = adaptor.FetchEoIPInterfaces(ctx); err != nil {
 		return nil, err
 	}
 
-	if routes, rErr := s.mikrotikAdaptor.FetchRoutingRoutes(ctx); rErr == nil {
+	if routes, rErr := adaptor.FetchRoutingRoutes(ctx); rErr == nil {
 		data.Routes = routes
 		data.UsedV7Routes = true
 	} else {
 		s.logger.Warn("routing/route unavailable (expected on RouterOS v6), falling back to ip/route", zap.Error(rErr))
-		if data.Routes, err = s.mikrotikAdaptor.FetchIPRoutes(ctx); err != nil {
+		if data.Routes, err = adaptor.FetchIPRoutes(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -360,17 +366,17 @@ func (s *TunnelGraphService) LatestSnapshot(serverID uint) (*model.DiscoverySnap
 	return &snapshot, nil
 }
 
-// LatestGraphForActiveServer resolves the single active server (same
-// convention as Poll) and returns its most recent snapshot plus that
-// snapshot's nodes/edges -- the HTTP controller's own single read
-// endpoint for the graph inspector page, so it never needs to know a
-// server ID itself.
-func (s *TunnelGraphService) LatestGraphForActiveServer() (*model.DiscoverySnapshot, []model.GraphNode, []model.GraphEdge, error) {
-	var server model.Server
-	if err := s.db.Where("is_active = ?", true).First(&server).Error; err != nil {
-		return nil, nil, nil, nil
-	}
-	snapshot, err := s.LatestSnapshot(server.ID)
+// LatestGraphForServer returns serverID's most recent snapshot plus that
+// snapshot's nodes/edges -- the HTTP controller's own read endpoint for the
+// graph inspector page. Confirmed, reported multi-server gap this closes:
+// this used to always resolve "the" single active server internally
+// (db.Where("is_active = ?", true).First(...)) regardless of which server
+// the admin actually wanted to inspect, so the graph inspector could only
+// ever show one server's data no matter how many were registered, and
+// silently showed the WRONG server's graph once a second server existed
+// (whichever one happened to sort first as "active").
+func (s *TunnelGraphService) LatestGraphForServer(serverID uint) (*model.DiscoverySnapshot, []model.GraphNode, []model.GraphEdge, error) {
+	snapshot, err := s.LatestSnapshot(serverID)
 	if err != nil || snapshot == nil {
 		return snapshot, nil, nil, err
 	}
@@ -381,7 +387,7 @@ func (s *TunnelGraphService) LatestGraphForActiveServer() (*model.DiscoverySnaps
 	return snapshot, nodes, edges, nil
 }
 
-// DiscoveredTunnelInterfaces returns every interface name the MOST
+// DiscoveredTunnelInterfaces returns every interface name serverID's MOST
 // RECENT snapshot flagged as a genuine infrastructure tunnel (a
 // tunnel_interface graph node -- see discoveryData.tunnelGatewayNames'
 // own doc comment for the real detection rule: something in the routing
@@ -391,14 +397,14 @@ func (s *TunnelGraphService) LatestGraphForActiveServer() (*model.DiscoverySnaps
 // back to scanning model.Interface (customer WireGuard peer interfaces),
 // per the admin's own explicit correction that those are NOT
 // infrastructure tunnels. Returns an empty slice (not an error) when no
-// snapshot exists yet, so a fresh install simply has nothing to poll
-// until the first discovery tick completes, rather than failing.
-func (s *TunnelGraphService) DiscoveredTunnelInterfaces() ([]model.GraphNode, error) {
-	var server model.Server
-	if err := s.db.Where("is_active = ?", true).First(&server).Error; err != nil {
-		return nil, nil
-	}
-	snapshot, err := s.LatestSnapshot(server.ID)
+// snapshot exists yet for this server, so a server whose first discovery
+// tick hasn't completed yet simply has nothing to poll, rather than
+// failing. Confirmed, reported multi-server gap this closes: this used to
+// always resolve "the" single active server internally, so
+// TunnelHealthService.Poll could only ever see one server's tunnels no
+// matter how many servers were registered.
+func (s *TunnelGraphService) DiscoveredTunnelInterfaces(serverID uint) ([]model.GraphNode, error) {
+	snapshot, err := s.LatestSnapshot(serverID)
 	if err != nil {
 		return nil, err
 	}

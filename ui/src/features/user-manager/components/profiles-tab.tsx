@@ -11,14 +11,17 @@ import {
 } from '@/components/ui/table.tsx'
 
 interface Props {
+  // Which server's profiles to list -- mirrors GroupsTab's own ServerID
+  // prop/reasoning exactly.
+  serverId?: number
   // When set (a self-serve reseller), only profiles in this list are shown
   // -- matches the backend's "must be explicitly assigned" enforcement
   // exactly (see ensureResellerCanUseProfile).
   allowedProfileNames?: string[]
 }
 
-export function ProfilesTab({ allowedProfileNames }: Props) {
-  const { data: allProfiles = [], isLoading } = useUserManagerProfilesQuery()
+export function ProfilesTab({ serverId, allowedProfileNames }: Props) {
+  const { data: allProfiles = [], isLoading } = useUserManagerProfilesQuery(serverId)
 
   const profiles =
     allowedProfileNames !== undefined

@@ -66,13 +66,19 @@ func openUserManagerResetTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// newTestUserManagerServiceWithFakeRouter registers the fake router's
+// client under server ID 0 -- model.UserManagerAccount.ServerID's own Go
+// zero value, matching every account this file's tests create without
+// explicitly setting ServerID (MwpClients is keyed by server ID, see its
+// own doc comment, and UserManagerService methods resolve it from
+// account.ServerID directly, not from an active-server DB lookup).
 func newTestUserManagerServiceWithFakeRouter(t *testing.T, db *gorm.DB, srv *httptest.Server) *UserManagerService {
 	t.Helper()
 	mwpClients := common.NewMwpClients(db)
 	isSSL := false
 	addr := srv.Listener.Addr().String()
 	host, port := addr[:len(addr)-len(":")-len(portOf(addr))], portOf(addr)
-	mwpClients.SetClient(&schema.CreateServerRequest{
+	mwpClients.SetClient(uint(0), &schema.CreateServerRequest{
 		Name:      "test-server",
 		IPAddress: host,
 		APIPort:   port,

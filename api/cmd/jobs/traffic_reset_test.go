@@ -32,6 +32,12 @@ func newConfigurableFakeAdaptor() *configurableFakeAdaptor {
 	return &configurableFakeAdaptor{updates: make(map[string]string)}
 }
 
+// ForServer satisfies MikrotikAdaptorFactory -- this fake is single-server
+// only, matching fakeAdaptor's own identical ForServer (traffic_e2e_test.go).
+func (f *configurableFakeAdaptor) ForServer(serverID uint) MikrotikAdaptor {
+	return f
+}
+
 func (f *configurableFakeAdaptor) FetchWgPeer(ctx context.Context, peerID string) (*mikrotik.WireGuardPeer, error) {
 	if f.wgPeer != nil {
 		return f.wgPeer, nil

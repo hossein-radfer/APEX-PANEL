@@ -125,7 +125,7 @@ func main() {
 
 	mikrotikAdaptor := mikrotik.NewAdaptor(mwpClients)
 	telegramNotifier := service.NewTelegramNotifier(config.GetTelegramConfig())
-	trafficCalculator := traffic.NewTrafficCalculator(db, mikrotikAdaptor, telegramNotifier)
+	trafficCalculator := traffic.NewTrafficCalculator(db, traffic.RealMikrotikAdaptorFactory{Adaptor: mikrotikAdaptor}, telegramNotifier)
 
 	// Telegram bot: constructed here (not inside StartHttpServer) since the
 	// traffic job below and the HTTP layer both need the same running
@@ -298,6 +298,8 @@ func main() {
 	trafficCalculator.SetQuotaNotifier(botNotifier)
 	trafficCalculator.SetCriticalAlertNotifier(botNotifier)
 	trafficCalculator.SetUsageRecorder(usageSnapshotWriter)
+	v2raySyncService.SetQuotaNotifier(botNotifier)
+	dnsSyncService.SetQuotaNotifier(botNotifier)
 
 	// Fires the admin's /setbackup and /setreport schedules (see
 	// BotScheduler.Tick) -- both are otherwise inert database columns with

@@ -18,10 +18,10 @@ import {
 // command_detail shows the literal RouterOS call that would have been
 // sent -- nothing in this table implies it was actually executed unless
 // the "شبیه‌سازی" badge says otherwise.
-export function ActionsTab() {
+export function ActionsTab({ serverId }: { serverId?: number }) {
   const { data: rows = [], isLoading } = useQuery({
-    queryKey: ['tunnel_ai_actions'],
-    queryFn: () => fetchTunnelActionLogs(200),
+    queryKey: ['tunnel_ai_actions', serverId],
+    queryFn: () => fetchTunnelActionLogs(200, serverId),
     refetchInterval: 30_000,
   })
 

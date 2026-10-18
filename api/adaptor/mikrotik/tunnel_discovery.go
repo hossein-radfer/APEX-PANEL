@@ -23,9 +23,9 @@ type IPPoolEntry struct {
 	Ranges string `json:"ranges,omitempty"`
 }
 
-func (a *Adaptor) FetchIPPools(c context.Context) ([]IPPoolEntry, error) {
+func (s *ServerAdaptor) FetchIPPools(c context.Context) ([]IPPoolEntry, error) {
 	var pools []IPPoolEntry
-	err := a.mwpClients.GetClient(nil).Get(c, common.IPPoolPath, &pools)
+	err := s.client().Get(c, common.IPPoolPath, &pools)
 	if err != nil {
 		return nil, err
 	}
@@ -58,25 +58,25 @@ type FirewallRule struct {
 	Comment           *string `json:"comment,omitempty"`
 }
 
-func (a *Adaptor) FetchFirewallFilterRules(c context.Context) ([]FirewallRule, error) {
+func (s *ServerAdaptor) FetchFirewallFilterRules(c context.Context) ([]FirewallRule, error) {
 	var rules []FirewallRule
-	if err := a.mwpClients.GetClient(nil).Get(c, common.FirewallFilterPath, &rules); err != nil {
+	if err := s.client().Get(c, common.FirewallFilterPath, &rules); err != nil {
 		return nil, err
 	}
 	return rules, nil
 }
 
-func (a *Adaptor) FetchFirewallNatRules(c context.Context) ([]FirewallRule, error) {
+func (s *ServerAdaptor) FetchFirewallNatRules(c context.Context) ([]FirewallRule, error) {
 	var rules []FirewallRule
-	if err := a.mwpClients.GetClient(nil).Get(c, common.FirewallNatPath, &rules); err != nil {
+	if err := s.client().Get(c, common.FirewallNatPath, &rules); err != nil {
 		return nil, err
 	}
 	return rules, nil
 }
 
-func (a *Adaptor) FetchFirewallMangleRules(c context.Context) ([]FirewallRule, error) {
+func (s *ServerAdaptor) FetchFirewallMangleRules(c context.Context) ([]FirewallRule, error) {
 	var rules []FirewallRule
-	if err := a.mwpClients.GetClient(nil).Get(c, common.FirewallManglePath, &rules); err != nil {
+	if err := s.client().Get(c, common.FirewallManglePath, &rules); err != nil {
 		return nil, err
 	}
 	return rules, nil
@@ -89,9 +89,9 @@ type FirewallAddressListEntry struct {
 	Timeout *string `json:"timeout,omitempty"`
 }
 
-func (a *Adaptor) FetchFirewallAddressList(c context.Context) ([]FirewallAddressListEntry, error) {
+func (s *ServerAdaptor) FetchFirewallAddressList(c context.Context) ([]FirewallAddressListEntry, error) {
 	var entries []FirewallAddressListEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.FirewallAddressListPath, &entries); err != nil {
+	if err := s.client().Get(c, common.FirewallAddressListPath, &entries); err != nil {
 		return nil, err
 	}
 	return entries, nil
@@ -145,9 +145,9 @@ type RouteEntry struct {
 	ImmediateGw *string `json:"immediate-gw,omitempty"`
 }
 
-func (a *Adaptor) FetchIPRoutes(c context.Context) ([]RouteEntry, error) {
+func (s *ServerAdaptor) FetchIPRoutes(c context.Context) ([]RouteEntry, error) {
 	var routes []RouteEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.IPRoutePath, &routes); err != nil {
+	if err := s.client().Get(c, common.IPRoutePath, &routes); err != nil {
 		return nil, err
 	}
 	return routes, nil
@@ -160,8 +160,8 @@ func (a *Adaptor) FetchIPRoutes(c context.Context) ([]RouteEntry, error) {
 // left completely untouched, so a failover can never accidentally
 // reshape what traffic the route matches or which routing table it
 // belongs to -- only WHERE that already-matched traffic goes next.
-func (a *Adaptor) SetRouteGateway(c context.Context, routeID string, gatewayIP string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) SetRouteGateway(c context.Context, routeID string, gatewayIP string) error {
+	httpClient := s.client()
 	return httpClient.Patch(
 		c,
 		common.IPRoutePath+"/"+routeID,
@@ -175,9 +175,9 @@ func (a *Adaptor) SetRouteGateway(c context.Context, routeID string, gatewayIP s
 // FetchIPRoutes instead" (spec section ب-1's own note that /routing/route
 // only exists on v7) rather than a fatal discovery error, since this
 // codebase's fleet may not be 100% v7 forever even though it is today.
-func (a *Adaptor) FetchRoutingRoutes(c context.Context) ([]RouteEntry, error) {
+func (s *ServerAdaptor) FetchRoutingRoutes(c context.Context) ([]RouteEntry, error) {
 	var routes []RouteEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.RoutingRoutePath, &routes); err != nil {
+	if err := s.client().Get(c, common.RoutingRoutePath, &routes); err != nil {
 		return nil, err
 	}
 	return routes, nil
@@ -189,9 +189,9 @@ type RoutingTableEntry struct {
 	Fib  string `json:"fib,omitempty"`
 }
 
-func (a *Adaptor) FetchRoutingTables(c context.Context) ([]RoutingTableEntry, error) {
+func (s *ServerAdaptor) FetchRoutingTables(c context.Context) ([]RoutingTableEntry, error) {
 	var tables []RoutingTableEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.RoutingTablePath, &tables); err != nil {
+	if err := s.client().Get(c, common.RoutingTablePath, &tables); err != nil {
 		return nil, err
 	}
 	return tables, nil
@@ -202,9 +202,9 @@ type BridgeEntry struct {
 	Name string `json:"name,omitempty"`
 }
 
-func (a *Adaptor) FetchBridges(c context.Context) ([]BridgeEntry, error) {
+func (s *ServerAdaptor) FetchBridges(c context.Context) ([]BridgeEntry, error) {
 	var bridges []BridgeEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.BridgePath, &bridges); err != nil {
+	if err := s.client().Get(c, common.BridgePath, &bridges); err != nil {
 		return nil, err
 	}
 	return bridges, nil
@@ -216,9 +216,9 @@ type BridgePortEntry struct {
 	Bridge    string `json:"bridge,omitempty"`
 }
 
-func (a *Adaptor) FetchBridgePorts(c context.Context) ([]BridgePortEntry, error) {
+func (s *ServerAdaptor) FetchBridgePorts(c context.Context) ([]BridgePortEntry, error) {
 	var ports []BridgePortEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.BridgePortPath, &ports); err != nil {
+	if err := s.client().Get(c, common.BridgePortPath, &ports); err != nil {
 		return nil, err
 	}
 	return ports, nil
@@ -238,25 +238,25 @@ type TunnelInterfaceEntry struct {
 	LocalAddr  *string `json:"local-address,omitempty"`
 }
 
-func (a *Adaptor) FetchGREInterfaces(c context.Context) ([]TunnelInterfaceEntry, error) {
+func (s *ServerAdaptor) FetchGREInterfaces(c context.Context) ([]TunnelInterfaceEntry, error) {
 	var ifaces []TunnelInterfaceEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.GREInterfacePath, &ifaces); err != nil {
+	if err := s.client().Get(c, common.GREInterfacePath, &ifaces); err != nil {
 		return nil, err
 	}
 	return ifaces, nil
 }
 
-func (a *Adaptor) FetchIPIPInterfaces(c context.Context) ([]TunnelInterfaceEntry, error) {
+func (s *ServerAdaptor) FetchIPIPInterfaces(c context.Context) ([]TunnelInterfaceEntry, error) {
 	var ifaces []TunnelInterfaceEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.IPIPInterfacePath, &ifaces); err != nil {
+	if err := s.client().Get(c, common.IPIPInterfacePath, &ifaces); err != nil {
 		return nil, err
 	}
 	return ifaces, nil
 }
 
-func (a *Adaptor) FetchEoIPInterfaces(c context.Context) ([]TunnelInterfaceEntry, error) {
+func (s *ServerAdaptor) FetchEoIPInterfaces(c context.Context) ([]TunnelInterfaceEntry, error) {
 	var ifaces []TunnelInterfaceEntry
-	if err := a.mwpClients.GetClient(nil).Get(c, common.EoIPInterfacePath, &ifaces); err != nil {
+	if err := s.client().Get(c, common.EoIPInterfacePath, &ifaces); err != nil {
 		return nil, err
 	}
 	return ifaces, nil
@@ -273,26 +273,26 @@ func (a *Adaptor) FetchEoIPInterfaces(c context.Context) ([]TunnelInterfaceEntry
 // keep RouterOS's own defaults, since Level 3's whole purpose is
 // emergency connectivity restoration, not replicating every tuning knob
 // of a hand-configured tunnel.
-func (a *Adaptor) CreateGREInterface(c context.Context, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
-	return a.createTunnelInterface(c, common.GREInterfacePath, name, remoteAddr, localAddr)
+func (s *ServerAdaptor) CreateGREInterface(c context.Context, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
+	return s.createTunnelInterface(c, common.GREInterfacePath, name, remoteAddr, localAddr)
 }
 
-func (a *Adaptor) CreateIPIPInterface(c context.Context, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
-	return a.createTunnelInterface(c, common.IPIPInterfacePath, name, remoteAddr, localAddr)
+func (s *ServerAdaptor) CreateIPIPInterface(c context.Context, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
+	return s.createTunnelInterface(c, common.IPIPInterfacePath, name, remoteAddr, localAddr)
 }
 
-func (a *Adaptor) CreateEoIPInterface(c context.Context, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
-	return a.createTunnelInterface(c, common.EoIPInterfacePath, name, remoteAddr, localAddr)
+func (s *ServerAdaptor) CreateEoIPInterface(c context.Context, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
+	return s.createTunnelInterface(c, common.EoIPInterfacePath, name, remoteAddr, localAddr)
 }
 
-func (a *Adaptor) createTunnelInterface(c context.Context, path string, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
+func (s *ServerAdaptor) createTunnelInterface(c context.Context, path string, name string, remoteAddr string, localAddr *string) (*TunnelInterfaceEntry, error) {
 	payload := TunnelInterfaceEntry{
 		Name:       name,
 		RemoteAddr: &remoteAddr,
 		LocalAddr:  localAddr,
 	}
 	var created TunnelInterfaceEntry
-	if err := a.mwpClients.GetClient(nil).Put(c, path, payload, &created); err != nil {
+	if err := s.client().Put(c, path, payload, &created); err != nil {
 		return nil, err
 	}
 	return &created, nil
@@ -305,13 +305,13 @@ func (a *Adaptor) createTunnelInterface(c context.Context, path string, name str
 // convention -- the admin-configured next-hop IP through the NEW tunnel,
 // since (as established for Level 2) a route's gateway on this fleet is
 // always resolved via a next-hop IP, never a bare interface name.
-func (a *Adaptor) CreateRoute(c context.Context, dstAddress string, gatewayIP string) (*RouteEntry, error) {
+func (s *ServerAdaptor) CreateRoute(c context.Context, dstAddress string, gatewayIP string) (*RouteEntry, error) {
 	payload := RouteEntry{
 		DstAddress: dstAddress,
 		Gateway:    &gatewayIP,
 	}
 	var created RouteEntry
-	if err := a.mwpClients.GetClient(nil).Put(c, common.IPRoutePath, payload, &created); err != nil {
+	if err := s.client().Put(c, common.IPRoutePath, payload, &created); err != nil {
 		return nil, err
 	}
 	return &created, nil
@@ -339,7 +339,7 @@ type PingResult struct {
 // destinations from the same router) and for the nightly active
 // backup-path probe (confirming a configured Level 2 gateway is
 // reachable before an incident ever needs it).
-func (a *Adaptor) Ping(c context.Context, address string, count int) ([]PingResult, error) {
+func (s *ServerAdaptor) Ping(c context.Context, address string, count int) ([]PingResult, error) {
 	var results []PingResult
 
 	reqBody := map[string]string{
@@ -347,7 +347,7 @@ func (a *Adaptor) Ping(c context.Context, address string, count int) ([]PingResu
 		"count":   strconv.Itoa(count),
 	}
 
-	if err := a.mwpClients.GetClient(nil).Post(c, common.ToolPingPath, reqBody, &results); err != nil {
+	if err := s.client().Post(c, common.ToolPingPath, reqBody, &results); err != nil {
 		return nil, err
 	}
 	return results, nil
@@ -375,25 +375,25 @@ type PPPServerConfig struct {
 	UseIpsec *string `json:"use-ipsec,omitempty"`
 }
 
-func (a *Adaptor) FetchL2TPServerConfig(c context.Context) (*PPPServerConfig, error) {
+func (s *ServerAdaptor) FetchL2TPServerConfig(c context.Context) (*PPPServerConfig, error) {
 	var cfg PPPServerConfig
-	if err := a.mwpClients.GetClient(nil).Get(c, common.L2TPServerPath, &cfg); err != nil {
+	if err := s.client().Get(c, common.L2TPServerPath, &cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
 }
 
-func (a *Adaptor) FetchPPTPServerConfig(c context.Context) (*PPPServerConfig, error) {
+func (s *ServerAdaptor) FetchPPTPServerConfig(c context.Context) (*PPPServerConfig, error) {
 	var cfg PPPServerConfig
-	if err := a.mwpClients.GetClient(nil).Get(c, common.PPTPServerPath, &cfg); err != nil {
+	if err := s.client().Get(c, common.PPTPServerPath, &cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
 }
 
-func (a *Adaptor) FetchSSTPServerConfig(c context.Context) (*PPPServerConfig, error) {
+func (s *ServerAdaptor) FetchSSTPServerConfig(c context.Context) (*PPPServerConfig, error) {
 	var cfg PPPServerConfig
-	if err := a.mwpClients.GetClient(nil).Get(c, common.SSTPServerPath, &cfg); err != nil {
+	if err := s.client().Get(c, common.SSTPServerPath, &cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -412,9 +412,9 @@ func (a *Adaptor) FetchSSTPServerConfig(c context.Context) (*PPPServerConfig, er
 // array is empty -- an empty list here most plausibly means "no OVPN
 // server instance configured," which this health check should read as
 // "not enabled" rather than fail on).
-func (a *Adaptor) FetchOvpnServerConfig(c context.Context) (*PPPServerConfig, error) {
+func (s *ServerAdaptor) FetchOvpnServerConfig(c context.Context) (*PPPServerConfig, error) {
 	var raw json.RawMessage
-	if err := a.mwpClients.GetClient(nil).Get(c, common.OvpnServerPath, &raw); err != nil {
+	if err := s.client().Get(c, common.OvpnServerPath, &raw); err != nil {
 		return nil, err
 	}
 

@@ -40,9 +40,17 @@ func openDeviceDataTestDB(t *testing.T) *gorm.DB {
 // -- mirrors newTestUserManagerServiceWithFakeRouter's own pattern
 // (user_manager_reset_usage_test.go), simulating a Mikrotik router that is
 // registered but unreachable/misconfigured (every request 404s), as
-// opposed to no server being configured at all.
+// opposed to no server being configured at all. Requires the caller to
+// have already created exactly one model.Server row in db (MwpClients is
+// keyed by server ID -- see its own doc comment -- so this looks that row
+// up to register the client under its real ID).
 func newTestDeviceDataServiceWithUnreachableRouter(t *testing.T, db *gorm.DB) *DeviceData {
 	t.Helper()
+
+	var server model.Server
+	if err := db.First(&server).Error; err != nil {
+		t.Fatalf("expected a model.Server row to already exist: %v", err)
+	}
 
 	unreachable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -53,7 +61,7 @@ func newTestDeviceDataServiceWithUnreachableRouter(t *testing.T, db *gorm.DB) *D
 	isSSL := false
 	addr := unreachable.Listener.Addr().String()
 	host, port := addr[:len(addr)-len(":")-len(portOf(addr))], portOf(addr)
-	mwpClients.SetClient(&schema.CreateServerRequest{
+	mwpClients.SetClient(server.ID, &schema.CreateServerRequest{
 		Name:      "unreachable-test-server",
 		IPAddress: host,
 		APIPort:   port,
@@ -86,16 +94,33 @@ func newTestDeviceDataServiceWithUnreachableRouter(t *testing.T, db *gorm.DB) *D
 // GetDeviceData no longer returns an error at all just because the router
 // is unreachable, and DB-only sections (ServerInfo/InterfaceInfo/
 // TrafficInfo) are still populated correctly while the genuinely
-// router-dependent sections (DeviceInfo/DeviceIdentity/DNSConfig/PeerInfo)
-// come back nil instead of aborting the whole response.
+// router-dependent sections (DeviceInfo/DeviceIdentity/DNSConfig) come back
+// nil instead of aborting the whole response. PeerInfo is a partial
+// exception since the multi-server rework of WgPeer.GetPeersData (see its
+// own doc comment): its TotalPeers count is itself a pure DB read, so it
+// stays populated even when every server's live online-status fetch fails;
+// only the live portion (OnlinePeers) degrades.
 func TestGetDeviceData_UnreachableRouterDoesNotBlankTheWholeDashboard(t *testing.T) {
 	db := openDeviceDataTestDB(t)
 
-	if err := db.Create(&model.Server{Name: "server-1", IsActive: true}).Error; err != nil {
+	server := model.Server{Name: "server-1", IsActive: true}
+	if err := db.Create(&server).Error; err != nil {
 		t.Fatalf("failed to seed server: %v", err)
 	}
-	if err := db.Create(&model.Interface{InterfaceID: "wg0", Name: "wg0"}).Error; err != nil {
+	if err := db.Create(&model.Interface{ServerID: server.ID, InterfaceID: "wg0", Name: "wg0"}).Error; err != nil {
 		t.Fatalf("failed to seed interface: %v", err)
+	}
+	// A peer row is required for GetPeersData's own live Mikrotik call to
+	// actually happen -- it only fetches live state for servers that own
+	// at least one DB peer row (see WgPeer.GetPeersData's own doc comment),
+	// so PeerInfo's "degrades to nil on an unreachable router" behavior
+	// this test verifies has nothing to exercise without one.
+	if err := db.Create(&model.Peer{
+		ServerID: server.ID, UUID: "peer-uuid-1", PeerID: "*1", Name: "peer-1",
+		PrivateKey: "priv", PublicKey: "pub", Interface: "wg0",
+		AllowedAddress: "10.0.0.2/32", Endpoint: "example.com", EndpointPort: "51820",
+	}).Error; err != nil {
+		t.Fatalf("failed to seed peer: %v", err)
 	}
 
 	svc := newTestDeviceDataServiceWithUnreachableRouter(t, db)
@@ -124,9 +149,22 @@ func TestGetDeviceData_UnreachableRouterDoesNotBlankTheWholeDashboard(t *testing
 		t.Error("expected TrafficInfo to be populated (pure DB read, no network dependency)")
 	}
 
-	// Router-dependent sections must degrade to nil, not abort everything.
-	if data.PeerInfo != nil {
-		t.Error("expected PeerInfo to be nil (its own fetch requires a live Mikrotik call, which fails here)")
+	// PeerInfo, unlike DeviceInfo/DeviceIdentity/DNSConfig below, is now a
+	// multi-server-safe aggregate (see WgPeer.GetPeersData's own doc
+	// comment on fetching per-server rather than via one single-server
+	// call) -- an unreachable server's own live fetch is skipped (logged,
+	// not fatal) while every OTHER server's data (and the pure-DB total
+	// peer count) is still returned, rather than the whole section going
+	// nil the moment any one server is unreachable.
+	if data.PeerInfo == nil {
+		t.Error("expected PeerInfo to still be populated (TotalPeers is a pure DB read; only the live online-status portion degrades)")
+	} else {
+		if data.PeerInfo.TotalPeers != 1 {
+			t.Errorf("expected 1 total peer from the DB read, got %d", data.PeerInfo.TotalPeers)
+		}
+		if data.PeerInfo.OnlinePeers != 0 {
+			t.Errorf("expected 0 online peers since the only server is unreachable, got %d", data.PeerInfo.OnlinePeers)
+		}
 	}
 	if data.DeviceInfo != nil {
 		t.Error("expected DeviceInfo to be nil (its own fetch requires a live Mikrotik call, which fails here)")

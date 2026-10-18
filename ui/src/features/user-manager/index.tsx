@@ -1,13 +1,22 @@
+import { useEffect, useState } from 'react'
 import { useUserManagerAccountsListQuery } from '@/hooks/user-manager/useUserManagerAccountsListQuery.ts'
 import { useResellerQuery } from '@/hooks/resellers/useResellerQuery.ts'
 import { useAssignedUserManagerGroupsQuery } from '@/hooks/resellers/useAssignedUserManagerGroupsQuery.ts'
 import { useAssignedUserManagerProfilesQuery } from '@/hooks/resellers/useAssignedUserManagerProfilesQuery.ts'
+import { useServersListQuery } from '@/hooks/servers/useServersListQuery.ts'
 import { useAuthStore } from '@/stores/authStore.ts'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { accountColumns } from '@/features/user-manager/components/account-columns.tsx'
 import { AccountDialogs } from '@/features/user-manager/components/account-dialogs.tsx'
@@ -36,6 +45,23 @@ export default function UserManager() {
   )
 
   const canCreate = isAdmin || Boolean(selfReseller?.canCreateUserManagerAccounts)
+
+  // Groups/profiles are scoped per server (a group name like "default"
+  // exists independently per server -- see
+  // ResellerUserManagerGroup.ServerID's own doc comment), so the admin's
+  // Groups/Profiles tabs need a server picker, shown only once there's more
+  // than one to choose between; auto-selects the lone server otherwise.
+  // Not shown for a reseller -- their own allowed-groups list is already
+  // scoped to whichever server the admin assigned them on.
+  const { data: serversList = [] } = useServersListQuery(isAdmin)
+  const [selectedServerId, setSelectedServerId] = useState<number | undefined>(
+    undefined
+  )
+  useEffect(() => {
+    if (selectedServerId === undefined && serversList.length >= 1) {
+      setSelectedServerId(serversList[0].id)
+    }
+  }, [selectedServerId, serversList])
 
   // A self-serve reseller only ever sees the groups/profiles the admin has
   // explicitly assigned to them (see ResellerUserManagerGroup/Profile) --
@@ -108,14 +134,50 @@ export default function UserManager() {
             </div>
           </TabsContent>
 
-          <TabsContent value='groups'>
+          <TabsContent value='groups' className='space-y-3'>
+            {isAdmin && serversList.length > 1 && (
+              <Select
+                value={selectedServerId ? String(selectedServerId) : undefined}
+                onValueChange={(value) => setSelectedServerId(Number(value))}
+              >
+                <SelectTrigger className='w-full md:w-80'>
+                  <SelectValue placeholder='یک سرور انتخاب کنید' />
+                </SelectTrigger>
+                <SelectContent>
+                  {serversList.map((server) => (
+                    <SelectItem key={server.id} value={String(server.id)}>
+                      {server.name} ({server.ip_address})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
             <GroupsTab
+              serverId={isAdmin ? selectedServerId : undefined}
               allowedGroupNames={isReseller ? (allowedGroupNames ?? []) : undefined}
             />
           </TabsContent>
 
-          <TabsContent value='profiles'>
+          <TabsContent value='profiles' className='space-y-3'>
+            {isAdmin && serversList.length > 1 && (
+              <Select
+                value={selectedServerId ? String(selectedServerId) : undefined}
+                onValueChange={(value) => setSelectedServerId(Number(value))}
+              >
+                <SelectTrigger className='w-full md:w-80'>
+                  <SelectValue placeholder='یک سرور انتخاب کنید' />
+                </SelectTrigger>
+                <SelectContent>
+                  {serversList.map((server) => (
+                    <SelectItem key={server.id} value={String(server.id)}>
+                      {server.name} ({server.ip_address})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
             <ProfilesTab
+              serverId={isAdmin ? selectedServerId : undefined}
               allowedProfileNames={
                 isReseller ? (allowedProfileNames ?? []) : undefined
               }
@@ -123,8 +185,25 @@ export default function UserManager() {
           </TabsContent>
 
           {isAdmin && (
-            <TabsContent value='protocol-settings'>
-              <ProtocolSettingsTab />
+            <TabsContent value='protocol-settings' className='space-y-3'>
+              {serversList.length > 1 && (
+                <Select
+                  value={selectedServerId ? String(selectedServerId) : undefined}
+                  onValueChange={(value) => setSelectedServerId(Number(value))}
+                >
+                  <SelectTrigger className='w-full md:w-80'>
+                    <SelectValue placeholder='یک سرور انتخاب کنید' />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {serversList.map((server) => (
+                      <SelectItem key={server.id} value={String(server.id)}>
+                        {server.name} ({server.ip_address})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <ProtocolSettingsTab serverId={selectedServerId} />
             </TabsContent>
           )}
         </Tabs>

@@ -16,22 +16,113 @@ import (
 	"github.com/maahdima/mwp/api/utils/wireguard"
 )
 
+// SyncService reconciles this panel's DB (Peer/Interface rows) against a
+// SINGLE Mikrotik router's live state -- never across every registered
+// server at once. serverID is required at construction (see
+// NewSyncServiceForServer) and every DB read/write this service performs is
+// explicitly scoped to it (.Where("server_id = ?", s.serverID)), and every
+// delete goes through deleteStaleRow, the ONE place in this file allowed to
+// remove a Peer/Interface row.
+//
+// This shape exists to close a confirmed danger: comparing a partial source
+// of truth (one router's live peer/interface list) against an unscoped
+// destination set (every Peer/Interface row in the whole database) and
+// deleting whatever doesn't match is only safe when there is exactly one
+// server in the whole system. The moment a second server exists, the SAME
+// comparison would see server B's peers as simply absent from server A's
+// live list and permanently delete them -- not a hypothetical, this is
+// exactly the shape of bug that already happened once in this file (see
+// removeStaleInterfaces' own historical `s.db.Delete(dbIface.ID).Unscoped()`
+// mis-call, fixed by routing through deleteStaleRow below). Any FUTURE
+// "compare remote state to a DB table and delete what's missing" job in
+// this codebase should copy this shape (required serverID at construction,
+// a single private delete chokepoint that always re-applies the scope)
+// rather than reintroduce an unscoped comparison.
+//
+// SyncPeersAllServers/SyncInterfacesAllServers below are the only
+// multi-server-aware entrypoints -- they construct one SyncService per
+// registered server and run each one's single-server logic independently,
+// so a failure or a stale-row cleanup on one server can never affect
+// another's rows.
 type SyncService struct {
 	db              *gorm.DB
 	mikrotikAdaptor *mikrotik.Adaptor
 	configService   *ConfigGenerator
 	qrCodeService   *QRCodeGenerator
+	serverID        uint
 	logger          *zap.Logger
 }
 
-func NewSyncService(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor, configService *ConfigGenerator, qrCodeService *QRCodeGenerator) *SyncService {
+// NewSyncServiceForServer builds a SyncService scoped to exactly one
+// server. serverID is required (not optional/nilable) -- see this type's
+// own doc comment for why a sync/stale-row-deletion service must always
+// know exactly which server's rows it's allowed to touch.
+func NewSyncServiceForServer(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor, configService *ConfigGenerator, qrCodeService *QRCodeGenerator, serverID uint) *SyncService {
 	return &SyncService{
 		db:              db,
 		mikrotikAdaptor: mikrotikAdaptor,
 		configService:   configService,
 		qrCodeService:   qrCodeService,
-		logger:          zap.L().Named("SyncService"),
+		serverID:        serverID,
+		logger:          zap.L().Named("SyncService").With(zap.Uint("server_id", serverID)),
 	}
+}
+
+// SyncServiceFactory builds a per-server SyncService on demand --
+// SyncPeersAllServers/SyncInterfacesAllServers below take this rather than
+// a *SyncService directly, since a single instance is permanently bound to
+// one serverID and a multi-server sync needs a fresh one per server.
+type SyncServiceFactory func(serverID uint) *SyncService
+
+// NewSyncServiceFactory returns a SyncServiceFactory closed over the
+// shared dependencies every per-server SyncService needs.
+func NewSyncServiceFactory(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor, configService *ConfigGenerator, qrCodeService *QRCodeGenerator) SyncServiceFactory {
+	return func(serverID uint) *SyncService {
+		return NewSyncServiceForServer(db, mikrotikAdaptor, configService, qrCodeService, serverID)
+	}
+}
+
+// SyncPeersAllServers runs SyncPeers independently against every server
+// row in the database -- the admin-facing "sync peers" action operates
+// panel-wide, not against one server at a time (there is no per-server
+// picker at this call site yet). A failure on one server is logged and
+// does not stop the others from being attempted, mirroring every other
+// multi-resource job in this codebase's own "one dead source never blocks
+// the rest" convention; the first error encountered (if any) is still
+// returned so the HTTP layer can report that SOMETHING failed.
+func SyncPeersAllServers(db *gorm.DB, factory SyncServiceFactory) error {
+	var servers []model.Server
+	if err := db.Find(&servers).Error; err != nil {
+		return err
+	}
+	var firstErr error
+	for _, server := range servers {
+		if err := factory(server.ID).SyncPeers(); err != nil {
+			zap.L().Named("SyncService").Error("failed to sync peers for server", zap.Uint("server_id", server.ID), zap.Error(err))
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+// SyncInterfacesAllServers mirrors SyncPeersAllServers for SyncInterfaces.
+func SyncInterfacesAllServers(db *gorm.DB, factory SyncServiceFactory) error {
+	var servers []model.Server
+	if err := db.Find(&servers).Error; err != nil {
+		return err
+	}
+	var firstErr error
+	for _, server := range servers {
+		if err := factory(server.ID).SyncInterfaces(); err != nil {
+			zap.L().Named("SyncService").Error("failed to sync interfaces for server", zap.Uint("server_id", server.ID), zap.Error(err))
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 func (s *SyncService) SyncPeers() error {
@@ -97,16 +188,19 @@ func (s *SyncService) SyncInterfaces() error {
 }
 
 func (s *SyncService) fetchMikrotikPeers() ([]mikrotik.WireGuardPeer, error) {
-	peers, err := s.mikrotikAdaptor.FetchWgPeers(context.Background())
+	peers, err := s.mikrotikAdaptor.ForServer(s.serverID).FetchWgPeers(context.Background())
 	if err != nil {
 		s.logger.Error("failed to get peers from Mikrotik", zap.Error(err))
 	}
 	return peers, err
 }
 
+// fetchDBPeers returns ONLY this SyncService's own server's Peer rows --
+// see this type's own doc comment for why every read/write here is scoped
+// this way.
 func (s *SyncService) fetchDBPeers() ([]model.Peer, error) {
 	var peers []model.Peer
-	err := s.db.Find(&peers).Error
+	err := s.db.Where("server_id = ?", s.serverID).Find(&peers).Error
 	if err != nil {
 		s.logger.Error("failed to get peers from database", zap.Error(err))
 	}
@@ -150,6 +244,7 @@ func (s *SyncService) syncNewAndUpdatedPeers(peers map[string]mikrotik.WireGuard
 		if !exists {
 			dbPeer = model.Peer{
 				UUID:                uuid.New().String(),
+				ServerID:            s.serverID,
 				PeerID:              peer.ID,
 				PersistentKeepalive: common.DefaultKeepalive,
 			}
@@ -185,10 +280,16 @@ func (s *SyncService) syncNewAndUpdatedPeers(peers map[string]mikrotik.WireGuard
 	return nil
 }
 
+// removeStalePeers deletes every DB peer row (belonging to THIS SyncService's
+// own server -- dbMap, built from fetchDBPeers, only ever contains rows
+// already scoped that way) that mikrotikMap (this same server's live
+// peer list) no longer reports. Goes through deleteStaleRow, which
+// re-applies the server_id scope at delete time as a second, independent
+// guard -- see this type's own doc comment.
 func (s *SyncService) removeStalePeers(mikrotikMap map[string]mikrotik.WireGuardPeer, dbMap map[string]model.Peer) error {
 	for id, peer := range dbMap {
 		if _, found := mikrotikMap[id]; !found {
-			if err := s.db.Unscoped().Delete(&peer).Error; err != nil {
+			if err := s.deleteStaleRow(&model.Peer{}, peer.ID); err != nil {
 				s.logger.Error("failed to delete peer", zap.String("peerId", id), zap.Error(err))
 				return err
 			}
@@ -198,9 +299,19 @@ func (s *SyncService) removeStalePeers(mikrotikMap map[string]mikrotik.WireGuard
 	return nil
 }
 
+// deleteStaleRow is the ONLY place in this file permitted to delete a
+// Peer/Interface row -- it re-applies s.serverID as a WHERE clause on the
+// delete itself (not just on however the caller found the row), so even a
+// future bug in how a caller BUILT its candidate-for-deletion set can never
+// result in a row from a DIFFERENT server being removed. See this type's
+// own doc comment for the exact incident class this closes.
+func (s *SyncService) deleteStaleRow(model_ any, id uint) error {
+	return s.db.Unscoped().Where("server_id = ?", s.serverID).Delete(model_, id).Error
+}
+
 func (s *SyncService) fetchServer() (model.Server, error) {
 	var server model.Server
-	err := s.db.First(&server).Error
+	err := s.db.First(&server, s.serverID).Error
 	if err != nil {
 		s.logger.Error("failed to get server", zap.Error(err))
 	}
@@ -209,7 +320,7 @@ func (s *SyncService) fetchServer() (model.Server, error) {
 
 func (s *SyncService) fetchInterface(name, peerID string) (model.Interface, error) {
 	var iface model.Interface
-	err := s.db.Where("name = ?", name).First(&iface).Error
+	err := s.db.Where("server_id = ? AND name = ?", s.serverID, name).First(&iface).Error
 	if err != nil {
 		if errors.Is(gorm.ErrRecordNotFound, err) {
 			s.logger.Error("interface not found", zap.String("peerId", peerID), zap.String("interfaceId", name))
@@ -223,6 +334,7 @@ func (s *SyncService) fetchInterface(name, peerID string) (model.Interface, erro
 func (s *SyncService) buildDBPeer(peer mikrotik.WireGuardPeer, server model.Server, iface model.Interface) model.Peer {
 	return model.Peer{
 		UUID:                uuid.New().String(),
+		ServerID:            s.serverID,
 		PeerID:              peer.ID,
 		Disabled:            parseBool(peer.Disabled),
 		Comment:             peer.Comment,
@@ -251,16 +363,18 @@ func (s *SyncService) buildConfig(peer mikrotik.WireGuardPeer, dbPeer model.Peer
 }
 
 func (s *SyncService) fetchMikrotikInterfaces() ([]mikrotik.WireGuardInterface, error) {
-	ifaces, err := s.mikrotikAdaptor.FetchWgInterfaces(context.Background())
+	ifaces, err := s.mikrotikAdaptor.ForServer(s.serverID).FetchWgInterfaces(context.Background())
 	if err != nil {
 		s.logger.Error("failed to get interfaces from Mikrotik", zap.Error(err))
 	}
 	return ifaces, err
 }
 
+// fetchDBInterfaces returns ONLY this SyncService's own server's Interface
+// rows -- see this type's own doc comment.
 func (s *SyncService) fetchDBInterfaces() ([]model.Interface, error) {
 	var ifaces []model.Interface
-	err := s.db.Find(&ifaces).Error
+	err := s.db.Where("server_id = ?", s.serverID).Find(&ifaces).Error
 	if err != nil {
 		s.logger.Error("failed to get interfaces from database", zap.Error(err))
 	}
@@ -288,6 +402,7 @@ func (s *SyncService) syncNewAndUpdatedInterfaces(ifaceMap map[string]mikrotik.W
 		dbIface, exists := dbMap[id]
 		if !exists {
 			dbIface = model.Interface{
+				ServerID:    s.serverID,
 				InterfaceID: mikrotikIface.ID,
 			}
 		}
@@ -307,10 +422,17 @@ func (s *SyncService) syncNewAndUpdatedInterfaces(ifaceMap map[string]mikrotik.W
 	return nil
 }
 
+// removeStaleInterfaces deletes every DB interface row (belonging to THIS
+// SyncService's own server) that mikrotikMap no longer reports. This is
+// also where a separate, confirmed delete-call bug lived
+// (s.db.Delete(dbIface.ID).Unscoped() -- Delete on an *bare ID* with no
+// model/table context is not a valid GORM delete-by-primary-key call at
+// all) -- deleteStaleRow fixes both issues at once: the wrong-call-shape
+// bug, and (now) the missing server scope.
 func (s *SyncService) removeStaleInterfaces(mikrotikMap map[string]mikrotik.WireGuardInterface, dbMap map[string]model.Interface) error {
 	for id, dbIface := range dbMap {
 		if _, exists := mikrotikMap[id]; !exists {
-			if err := s.db.Delete(dbIface.ID).Unscoped().Error; err != nil {
+			if err := s.deleteStaleRow(&model.Interface{}, dbIface.ID); err != nil {
 				s.logger.Error("failed to delete interface", zap.String("interfaceId", id), zap.Error(err))
 				return err
 			}

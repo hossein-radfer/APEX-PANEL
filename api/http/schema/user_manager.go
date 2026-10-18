@@ -24,6 +24,12 @@ var (
 // ExpireTime's own "fixed date, not a duration" convention on the
 // single-create path.
 type BulkCreateUserManagerAccountRequest struct {
+	// ServerID picks which Mikrotik server the whole batch is created on --
+	// optional while a single-server install is common (nil falls back to
+	// that one server, same convention as CreateUserManagerAccountRequest.
+	// ServerID / CreateInterfaceRequest.ServerID), required in practice once
+	// more than one server is registered.
+	ServerID     *uint    `json:"server_id,omitempty"`
 	Count        int      `json:"count" validate:"required,min=1,max=500"`
 	Group        string   `json:"group" validate:"required"`
 	Profile      string   `json:"profile" validate:"required"`
@@ -51,6 +57,10 @@ type BulkCreateUserManagerAccountResponse struct {
 }
 
 type CreateUserManagerAccountRequest struct {
+	// ServerID picks which Mikrotik server this account is created on --
+	// optional, mirrors schema.CreateInterfaceRequest.ServerID's own doc
+	// comment (nil falls back to this install's one server).
+	ServerID     *uint    `json:"server_id,omitempty"`
 	Username     string   `json:"username" validate:"required"`
 	Password     string   `json:"password" validate:"required"`
 	Group        string   `json:"group" validate:"required"`
@@ -104,6 +114,8 @@ type UserManagerAccountShareStatusResponse struct {
 type UserManagerAccountResponse struct {
 	Id            uint                       `json:"id"`
 	UUID          string                     `json:"uuid"`
+	ServerID      uint                       `json:"server_id"`
+	ServerName    string                     `json:"server_name"`
 	Username      string                     `json:"username"`
 	Group         string                     `json:"group"`
 	Profile       string                     `json:"profile"`
@@ -131,6 +143,11 @@ type UserManagerProfileResponse struct {
 }
 
 type UpsertUserManagerProtocolConfigRequest struct {
+	// ServerID picks which Mikrotik server this protocol config applies
+	// to -- optional, mirrors schema.CreateInterfaceRequest.ServerID's own
+	// doc comment (resolved via resolveServerID; required once more than
+	// one server is registered).
+	ServerID        *uint   `json:"server_id,omitempty"`
 	Protocol        string  `json:"protocol" validate:"required,oneof=l2tp pptp sstp openvpn ikev2"`
 	Port            int     `json:"port" validate:"required,min=1,max=65535"`
 	ServerAddress   *string `json:"server_address,omitempty"`
@@ -141,6 +158,8 @@ type UpsertUserManagerProtocolConfigRequest struct {
 
 type UserManagerProtocolConfigResponse struct {
 	Id                 uint    `json:"id"`
+	ServerID           uint    `json:"server_id"`
+	ServerName         string  `json:"server_name"`
 	Protocol           string  `json:"protocol"`
 	Port               int     `json:"port"`
 	ServerAddress      *string `json:"server_address"`

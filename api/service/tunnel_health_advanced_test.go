@@ -233,13 +233,14 @@ func TestDiagnoseIncidentOnce_RemoteUnreachableWhenOnlyThisTunnelFails(t *testin
 	srv := fake.server()
 	defer srv.Close()
 
+	svc := newTestTunnelHealthService(t, db, srv)
+
 	// gre-EU must already be recorded as healthy for probeOtherTunnels to
 	// consider it a candidate "other tunnel" to sample.
-	if err := db.Create(&model.TunnelHealthStatus{InterfaceName: "gre-EU", Severity: "healthy", LastPolledAt: time.Now()}).Error; err != nil {
+	if err := db.Create(&model.TunnelHealthStatus{ServerID: svc.activeServerID, InterfaceName: "gre-EU", Severity: "healthy", LastPolledAt: time.Now()}).Error; err != nil {
 		t.Fatalf("failed to seed healthy tunnel status: %v", err)
 	}
 
-	svc := newTestTunnelHealthService(t, db, srv)
 	svc.diagnoseIncidentOnce("gre-TR", time.Now())
 
 	var diagnosis model.TunnelIncidentDiagnosis
@@ -269,11 +270,12 @@ func TestDiagnoseIncidentOnce_RouterUplinkDownWhenNothingResponds(t *testing.T) 
 	srv := fake.server()
 	defer srv.Close()
 
-	if err := db.Create(&model.TunnelHealthStatus{InterfaceName: "gre-EU", Severity: "healthy", LastPolledAt: time.Now()}).Error; err != nil {
+	svc := newTestTunnelHealthService(t, db, srv)
+
+	if err := db.Create(&model.TunnelHealthStatus{ServerID: svc.activeServerID, InterfaceName: "gre-EU", Severity: "healthy", LastPolledAt: time.Now()}).Error; err != nil {
 		t.Fatalf("failed to seed healthy tunnel status: %v", err)
 	}
 
-	svc := newTestTunnelHealthService(t, db, srv)
 	svc.diagnoseIncidentOnce("gre-TR", time.Now())
 
 	var diagnosis model.TunnelIncidentDiagnosis
@@ -329,7 +331,7 @@ func TestProbeBackupPaths_RecordsReachableAndUnreachable(t *testing.T) {
 	defer srv.Close()
 	svc := newTestTunnelHealthService(t, db, srv)
 
-	reachablePolicy, err := svc.policyService.GetOrCreateDefault("gre-TR")
+	reachablePolicy, err := svc.policyService.GetOrCreateDefault(svc.activeServerID, "gre-TR")
 	if err != nil {
 		t.Fatalf("failed to create policy for gre-TR: %v", err)
 	}
@@ -340,7 +342,7 @@ func TestProbeBackupPaths_RecordsReachableAndUnreachable(t *testing.T) {
 		t.Fatalf("failed to save reachable policy: %v", err)
 	}
 
-	unreachablePolicy, err := svc.policyService.GetOrCreateDefault("gre-EU")
+	unreachablePolicy, err := svc.policyService.GetOrCreateDefault(svc.activeServerID, "gre-EU")
 	if err != nil {
 		t.Fatalf("failed to create policy for gre-EU: %v", err)
 	}
@@ -352,7 +354,7 @@ func TestProbeBackupPaths_RecordsReachableAndUnreachable(t *testing.T) {
 	}
 
 	// No Level 2 configured at all -- must be silently skipped.
-	if _, err := svc.policyService.GetOrCreateDefault("gre-NONE"); err != nil {
+	if _, err := svc.policyService.GetOrCreateDefault(svc.activeServerID, "gre-NONE"); err != nil {
 		t.Fatalf("failed to create policy for gre-NONE: %v", err)
 	}
 
@@ -398,6 +400,7 @@ func TestBuildIncidentPatternReport_FlagsChronicFlapper(t *testing.T) {
 	now := time.Now()
 	for i := 0; i < incidentPatternMinFlaps; i++ {
 		event := model.TunnelHealthEvent{
+			ServerID:      svc.activeServerID,
 			InterfaceName: "gre-FLAPPY",
 			FromStatus:    "healthy",
 			ToStatus:      "confirmed_down",
@@ -409,7 +412,7 @@ func TestBuildIncidentPatternReport_FlagsChronicFlapper(t *testing.T) {
 		}
 	}
 
-	report := svc.BuildIncidentPatternReport(now)
+	report := svc.BuildIncidentPatternReport(svc.activeServerID, now)
 	if report == "" {
 		t.Fatal("expected a non-empty report for a chronically-flapping tunnel")
 	}
@@ -430,6 +433,7 @@ func TestBuildIncidentPatternReport_EmptyWhenNothingNoteworthy(t *testing.T) {
 
 	now := time.Now()
 	event := model.TunnelHealthEvent{
+		ServerID:      svc.activeServerID,
 		InterfaceName: "gre-QUIET",
 		FromStatus:    "healthy",
 		ToStatus:      "confirmed_down",
@@ -440,7 +444,7 @@ func TestBuildIncidentPatternReport_EmptyWhenNothingNoteworthy(t *testing.T) {
 		t.Fatalf("failed to seed event: %v", err)
 	}
 
-	report := svc.BuildIncidentPatternReport(now)
+	report := svc.BuildIncidentPatternReport(svc.activeServerID, now)
 	if report != "" {
 		t.Errorf("expected an empty report for a single isolated incident, got: %s", report)
 	}
@@ -461,8 +465,8 @@ func TestBuildIncidentPatternReport_FlagsCorrelatedTunnels(t *testing.T) {
 	for i := 0; i < incidentPatternMinCorrelatedCount; i++ {
 		base := now.Add(-time.Duration(i) * 24 * time.Hour)
 		events := []model.TunnelHealthEvent{
-			{InterfaceName: "gre-A", FromStatus: "healthy", ToStatus: "confirmed_down", Evidence: "test", DetectedAt: base},
-			{InterfaceName: "gre-B", FromStatus: "healthy", ToStatus: "confirmed_down", Evidence: "test", DetectedAt: base.Add(30 * time.Second)},
+			{ServerID: svc.activeServerID, InterfaceName: "gre-A", FromStatus: "healthy", ToStatus: "confirmed_down", Evidence: "test", DetectedAt: base},
+			{ServerID: svc.activeServerID, InterfaceName: "gre-B", FromStatus: "healthy", ToStatus: "confirmed_down", Evidence: "test", DetectedAt: base.Add(30 * time.Second)},
 		}
 		for _, e := range events {
 			if err := db.Create(&e).Error; err != nil {
@@ -471,7 +475,7 @@ func TestBuildIncidentPatternReport_FlagsCorrelatedTunnels(t *testing.T) {
 		}
 	}
 
-	report := svc.BuildIncidentPatternReport(now)
+	report := svc.BuildIncidentPatternReport(svc.activeServerID, now)
 	if report == "" {
 		t.Fatal("expected a non-empty report for correlated tunnels")
 	}

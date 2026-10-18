@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 import {
@@ -47,18 +47,26 @@ const chartConfig = {
 // that). The engine computes and stores a score every 60s poll tick
 // (service.TunnelHealthService.recordHealthScoreAndWarn) purely from
 // signals it already reads -- this chart is a read-only view of that.
-function HealthScoreTrendCard() {
+function HealthScoreTrendCard({ serverId }: { serverId?: number }) {
   const { data: statuses = [] } = useQuery({
-    queryKey: ['tunnel_health_statuses'],
-    queryFn: () => fetchTunnelHealthStatuses(),
+    queryKey: ['tunnel_health_statuses', serverId],
+    queryFn: () => fetchTunnelHealthStatuses(serverId),
   })
   const [selected, setSelected] = useState<string>('')
+  // An interface name chosen while viewing server A is meaningless once
+  // the shared server picker switches to server B -- reset it so the
+  // trend chart falls back to server B's own first tunnel instead of
+  // silently querying a name that belongs to a different router.
+  useEffect(() => {
+    setSelected('')
+  }, [serverId])
   const interfaceName = selected || statuses[0]?.interface_name || ''
 
   const { data: scores = [], isLoading } = useQuery({
-    queryKey: ['tunnel_health_scores', interfaceName],
-    queryFn: () => fetchTunnelHealthScoreHistory(interfaceName),
-    enabled: !!interfaceName,
+    queryKey: ['tunnel_health_scores', serverId, interfaceName],
+    queryFn: () =>
+      fetchTunnelHealthScoreHistory(serverId as number, interfaceName),
+    enabled: !!interfaceName && serverId !== undefined,
     refetchInterval: 60_000,
   })
 
@@ -170,10 +178,10 @@ const CAUSE_COLORS: Record<string, 'yellow' | 'red' | 'gray'> = {
 // diagnoseIncidentOnce) so an admin doesn't have to manually investigate
 // whether a down tunnel is its own isolated problem or a symptom of the
 // whole router losing connectivity.
-function IncidentDiagnosesCard() {
+function IncidentDiagnosesCard({ serverId }: { serverId?: number }) {
   const { data: diagnoses = [], isLoading } = useQuery({
-    queryKey: ['tunnel_incident_diagnoses'],
-    queryFn: () => fetchTunnelIncidentDiagnoses(),
+    queryKey: ['tunnel_incident_diagnoses', serverId],
+    queryFn: () => fetchTunnelIncidentDiagnoses(100, serverId),
     refetchInterval: 60_000,
   })
 
@@ -240,10 +248,10 @@ function IncidentDiagnosesCard() {
 // an admin confirm a backup path actually works BEFORE a real incident
 // ever needs it, instead of discovering a dead backup during a live
 // double-failure.
-function BackupProbeResultsCard() {
+function BackupProbeResultsCard({ serverId }: { serverId?: number }) {
   const { data: probes = [], isLoading } = useQuery({
-    queryKey: ['tunnel_backup_probe_results'],
-    queryFn: () => fetchTunnelBackupProbeResults(),
+    queryKey: ['tunnel_backup_probe_results', serverId],
+    queryFn: () => fetchTunnelBackupProbeResults(100, serverId),
     refetchInterval: 60_000,
   })
 
@@ -315,12 +323,12 @@ function BackupProbeResultsCard() {
 // is Telegram-only by design -- an analytical summary sent once a week,
 // not a live page an admin would refresh (see service.
 // TunnelHealthService.BuildIncidentPatternReport's own doc comment).
-export function AnalysisTab() {
+export function AnalysisTab({ serverId }: { serverId?: number }) {
   return (
     <div className='space-y-4'>
-      <HealthScoreTrendCard />
-      <IncidentDiagnosesCard />
-      <BackupProbeResultsCard />
+      <HealthScoreTrendCard serverId={serverId} />
+      <IncidentDiagnosesCard serverId={serverId} />
+      <BackupProbeResultsCard serverId={serverId} />
     </div>
   )
 }

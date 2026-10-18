@@ -24,6 +24,7 @@ import { useAssignedUserManagerProfilesQuery } from '@/hooks/resellers/useAssign
 import { useSetAssignedUserManagerProfilesMutation } from '@/hooks/resellers/useSetAssignedUserManagerProfilesMutation.ts'
 import { useUserManagerGroupsQuery } from '@/hooks/user-manager/useUserManagerGroupsQuery.ts'
 import { useUserManagerProfilesQuery } from '@/hooks/user-manager/useUserManagerProfilesQuery.ts'
+import { useServersListQuery } from '@/hooks/servers/useServersListQuery.ts'
 import { useXuiPanelsListQuery } from '@/hooks/xui-panel/useXuiPanelsListQuery.ts'
 import { useAssignedXuiPanelsQuery } from '@/hooks/v2ray/useAssignedXuiPanelsQuery.ts'
 import { useSetAssignedXuiPanelsMutation } from '@/hooks/v2ray/useSetAssignedXuiPanelsMutation.ts'
@@ -95,13 +96,29 @@ export function ResellerForm({ currentRow, onClose, setPending }: Props) {
     []
   )
 
-  const { data: umGroupsList = [] } = useUserManagerGroupsQuery()
-  const { data: umProfilesList = [] } = useUserManagerProfilesQuery()
+  // User Manager groups/profiles are scoped to one server (a group name
+  // like "default" exists independently per server -- see
+  // ResellerUserManagerGroup.ServerID's own doc comment), so this section
+  // gets its own server picker, shown only once there's more than one to
+  // choose between; auto-selects the lone server otherwise, matching
+  // InterfaceForm/AccountForm's identical convention.
+  const { data: serversList = [] } = useServersListQuery()
+  const [umServerId, setUmServerId] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    if (umServerId === undefined && serversList.length >= 1) {
+      setUmServerId(serversList[0].id)
+    }
+  }, [umServerId, serversList])
+
+  const { data: umGroupsList = [] } = useUserManagerGroupsQuery(umServerId)
+  const { data: umProfilesList = [] } = useUserManagerProfilesQuery(umServerId)
   const { data: assignedUmGroups } = useAssignedUserManagerGroupsQuery(
-    currentRow?.id
+    currentRow?.id,
+    umServerId
   )
   const { data: assignedUmProfiles } = useAssignedUserManagerProfilesQuery(
-    currentRow?.id
+    currentRow?.id,
+    umServerId
   )
   const [selectedUmGroups, setSelectedUmGroups] = useState<string[]>([])
   const [selectedUmProfiles, setSelectedUmProfiles] = useState<string[]>([])
@@ -498,10 +515,12 @@ export function ResellerForm({ currentRow, onClose, setPending }: Props) {
         })
         await setAssignedUserManagerGroups({
           resellerId: currentRow.id as number,
+          serverId: umServerId,
           groupNames: selectedUmGroups,
         })
         await setAssignedUserManagerProfiles({
           resellerId: currentRow.id as number,
+          serverId: umServerId,
           profileNames: selectedUmProfiles,
         })
         await setAssignedXuiPanels({
@@ -563,6 +582,7 @@ export function ResellerForm({ currentRow, onClose, setPending }: Props) {
           await runAssignment('گروه‌های یوزر منیجر', () =>
             setAssignedUserManagerGroups({
               resellerId: created.id,
+              serverId: umServerId,
               groupNames: selectedUmGroups,
             })
           )
@@ -571,6 +591,7 @@ export function ResellerForm({ currentRow, onClose, setPending }: Props) {
           await runAssignment('پروفایل‌های یوزر منیجر', () =>
             setAssignedUserManagerProfiles({
               resellerId: created.id,
+              serverId: umServerId,
               profileNames: selectedUmProfiles,
             })
           )
@@ -885,6 +906,30 @@ export function ResellerForm({ currentRow, onClose, setPending }: Props) {
 
           {canCreateUserManagerAccounts && (
             <>
+              {serversList.length > 1 && (
+                <div className='space-y-2'>
+                  <p className='text-sm font-medium'>سرور</p>
+                  <Select
+                    value={umServerId ? String(umServerId) : undefined}
+                    onValueChange={(value) => setUmServerId(Number(value))}
+                  >
+                    <SelectTrigger className='w-full md:w-80'>
+                      <SelectValue placeholder='یک سرور انتخاب کنید' />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {serversList.map((server) => (
+                        <SelectItem key={server.id} value={String(server.id)}>
+                          {server.name} ({server.ip_address})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className='text-muted-foreground text-sm'>
+                    گروه‌ها و پروفایل‌های مجاز زیر مخصوص همین سرور هستند؛ هر
+                    سرور باید جداگانه تنظیم شود.
+                  </p>
+                </div>
+              )}
               <div className='space-y-2'>
                 <p className='text-sm font-medium'>گروه‌های مجاز</p>
                 <p className='text-muted-foreground text-sm'>

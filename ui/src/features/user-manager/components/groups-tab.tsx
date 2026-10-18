@@ -11,6 +11,12 @@ import {
 } from '@/components/ui/table.tsx'
 
 interface Props {
+  // Which server's groups to list -- a group name like "default" exists
+  // independently per server (see ResellerUserManagerGroup.ServerID's own
+  // doc comment), so this tab always shows exactly one server's groups,
+  // never a cross-server merge. Undefined falls back to the backend's own
+  // "this install's one server" resolution.
+  serverId?: number
   // When set (a self-serve reseller), only groups in this list are shown --
   // matches the backend's "must be explicitly assigned" enforcement exactly
   // (see ensureResellerCanUseGroup), so a reseller never sees a group here
@@ -18,8 +24,8 @@ interface Props {
   allowedGroupNames?: string[]
 }
 
-export function GroupsTab({ allowedGroupNames }: Props) {
-  const { data: allGroups = [], isLoading } = useUserManagerGroupsQuery()
+export function GroupsTab({ serverId, allowedGroupNames }: Props) {
+  const { data: allGroups = [], isLoading } = useUserManagerGroupsQuery(serverId)
 
   const groups =
     allowedGroupNames !== undefined

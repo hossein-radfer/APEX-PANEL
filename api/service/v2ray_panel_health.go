@@ -198,7 +198,7 @@ func (s *V2RayPanelHealthService) diagnoseContainer(panel model.XuiPanel) (stopp
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	container, err := s.mikrotikAdaptor.FetchContainerByName(ctx, server.Name, *panel.ContainerName)
+	container, err := s.mikrotikAdaptor.ForServer(server.ID).FetchContainerByName(ctx, *panel.ContainerName)
 	if err != nil {
 		s.logger.Warn("failed to fetch container status for panel health diagnosis",
 			zap.Uint("panel_id", panel.ID), zap.String("server", server.Name), zap.String("container", *panel.ContainerName), zap.Error(err))

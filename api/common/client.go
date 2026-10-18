@@ -23,7 +23,7 @@ import (
 type MwpClients struct {
 	db      *gorm.DB
 	mu      sync.RWMutex
-	clients map[string]*httphelper.Client
+	clients map[uint]*httphelper.Client
 	logger  *zap.Logger
 }
 
@@ -31,14 +31,14 @@ func NewMwpClients(db *gorm.DB) *MwpClients {
 	return &MwpClients{
 		db:      db,
 		mu:      sync.RWMutex{},
-		clients: make(map[string]*httphelper.Client),
+		clients: make(map[uint]*httphelper.Client),
 		logger:  zap.L().Named("mwpClients"),
 	}
 }
 
 // IsConnected Check if the specified client is connected (not nil)
-func (c *MwpClients) IsConnected(serverName *string) bool {
-	connected, _, _ := c.CheckConnection(serverName)
+func (c *MwpClients) IsConnected(serverID *uint) bool {
+	connected, _, _ := c.CheckConnection(serverID)
 	return connected
 }
 
@@ -51,31 +51,32 @@ func (c *MwpClients) IsConnected(serverName *string) bool {
 // unreachable (ClientConnectionMiddleware's error response, the admin's
 // server-health view) doesn't have to re-run the same probe itself or
 // guess from a generic "not connected" message.
-func (c *MwpClients) CheckConnection(serverName *string) (connected bool, reason string, detail string) {
+//
+// Keyed by the server's ID, not its Name -- a Name is user-editable
+// (UpdateServer allows renaming a server), so keying by it would silently
+// orphan a server's client entry the moment it's renamed. ID is immutable
+// for the life of the row.
+func (c *MwpClients) CheckConnection(serverID *uint) (connected bool, reason string, detail string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	var server model.Server
-	var name string
 
-	if serverName == nil {
+	if serverID == nil {
 		if err := c.db.First(&server).Error; err != nil {
 			c.logger.Error("Failed to fetch server from database", zap.Error(err))
 			return false, "db_error", err.Error()
 		}
-		name = server.Name
 	} else {
-		name = utils.DerefString(serverName)
-
-		if err := c.db.Where("name = ?", name).First(&server).Error; err != nil {
-			c.logger.Error("Failed to fetch server by name", zap.String("serverName", name), zap.Error(err))
+		if err := c.db.First(&server, *serverID).Error; err != nil {
+			c.logger.Error("Failed to fetch server by id", zap.Uint("serverID", *serverID), zap.Error(err))
 			return false, "db_error", err.Error()
 		}
 	}
 
-	client, ok := c.clients[name]
+	client, ok := c.clients[server.ID]
 	if !ok || client == nil {
-		c.logger.Error("Client not found in mwp clients", zap.String("serverName", name))
+		c.logger.Error("Client not found in mwp clients", zap.Uint("serverID", server.ID), zap.String("serverName", server.Name))
 		return false, "not_configured", "no HTTP client initialized for this server"
 	}
 
@@ -92,7 +93,7 @@ func (c *MwpClients) CheckConnection(serverName *string) (connected bool, reason
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, uri, nil)
 	if err != nil {
-		c.logger.Error("Failed to create request to mikrotik REST API", zap.String("serverName", name), zap.Error(err))
+		c.logger.Error("Failed to create request to mikrotik REST API", zap.String("serverName", server.Name), zap.Error(err))
 		return false, "request_error", err.Error()
 	}
 
@@ -110,7 +111,7 @@ func (c *MwpClients) CheckConnection(serverName *string) (connected bool, reason
 			reason = "connection_refused"
 		}
 		c.logger.Error("HTTP request to mikrotik REST API failed",
-			zap.String("serverName", name),
+			zap.String("serverName", server.Name),
 			zap.String("reason", reason),
 			zap.Duration("elapsed", elapsed),
 			zap.Duration("configuredTimeout", probeTimeout),
@@ -121,13 +122,13 @@ func (c *MwpClients) CheckConnection(serverName *string) (connected bool, reason
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		c.logger.Error("Unauthorized response from mikrotik REST API",
-			zap.String("serverName", name), zap.Int("status", resp.StatusCode))
+			zap.String("serverName", server.Name), zap.Int("status", resp.StatusCode))
 		return false, "unauthorized", fmt.Sprintf("HTTP %d from %s:%d -- check the server's username/password", resp.StatusCode, server.IPAddress, server.APIPort)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		c.logger.Error("Unexpected status code from mikrotik REST API",
-			zap.String("serverName", name),
+			zap.String("serverName", server.Name),
 			zap.Int("status", resp.StatusCode))
 		return false, "bad_status", fmt.Sprintf("HTTP %d from %s:%d", resp.StatusCode, server.IPAddress, server.APIPort)
 	}
@@ -144,12 +145,19 @@ func isConnectionRefused(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
-// GetClient Get client for a specific server
-func (c *MwpClients) GetClient(serverName *string) *httphelper.Client {
+// GetClient Get client for a specific server, by ID. A nil serverID
+// returns an arbitrary registered client (whichever the map happens to
+// iterate first) -- callers that genuinely operate against a specific
+// server's data (a Peer, an Interface, a UserManagerAccount, all of which
+// now carry their own ServerID) must always pass that row's real ServerID
+// instead of relying on this fallback; see mikrotik.Adaptor.ForServer,
+// which is the one place in this codebase meant to resolve a server-scoped
+// client going forward.
+func (c *MwpClients) GetClient(serverID *uint) *httphelper.Client {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if serverName == nil {
+	if serverID == nil {
 		// get the first item in the client map
 		for _, client := range c.clients {
 			if client != nil {
@@ -158,23 +166,30 @@ func (c *MwpClients) GetClient(serverName *string) *httphelper.Client {
 
 			return nil
 		}
+		return nil
 	}
 
-	if client, ok := c.clients[utils.DerefString(serverName)]; ok {
+	if client, ok := c.clients[*serverID]; ok {
 		return client
 	}
 
-	zap.L().Error("client not found in mwp clients", zap.String("serverName", utils.DerefString(serverName)))
+	zap.L().Error("client not found in mwp clients", zap.Uint("serverID", *serverID))
 	return nil
 }
 
-// SetClient Set or update the client for a specific server
-func (c *MwpClients) SetClient(serverData *schema.CreateServerRequest) {
+// SetClient creates or replaces the HTTP client for one server, keyed by
+// serverID -- the caller's own database row ID, not derived from
+// serverData, since a brand-new server has no ID yet at the point
+// CreateServer builds its validation-probe client (see ServerService.
+// CreateServer, which calls this once with a provisional/placeholder ID
+// before the row exists, then again with the real one right after
+// db.Create assigns it).
+func (c *MwpClients) SetClient(serverID uint, serverData *schema.CreateServerRequest) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	apiPort := utils.ParseStringToInt(serverData.APIPort)
-	isSSL := *serverData.IsSSL
+	isSSL := serverData.IsSSL != nil && *serverData.IsSSL
 
 	var protocol string
 	if isSSL {
@@ -193,10 +208,16 @@ func (c *MwpClients) SetClient(serverData *schema.CreateServerRequest) {
 		c.logger.Panic("Failed to create HTTP client", zap.Error(err))
 	}
 
-	c.clients[serverData.Name] = client
+	c.clients[serverID] = client
 }
 
-// InitClient Set or update the client for a specific server
+// InitClient (re)builds every registered server's HTTP client from the
+// database -- called once at startup. Reads each server's own persisted
+// IsSSL (see model.Server.IsSSL's own doc comment for the bug this fixes:
+// before that column existed, every client rebuilt here hardcoded http://
+// and InsecureSkipVerify:true regardless of how the server was originally
+// configured, silently losing an SSL-enabled server's real settings on
+// every panel restart).
 func (c *MwpClients) InitClient() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -208,24 +229,29 @@ func (c *MwpClients) InitClient() {
 	}
 
 	for _, server := range servers {
+		protocol := "http"
+		if server.IsSSL {
+			protocol = "https"
+		}
+
 		client, err := httphelper.NewClient(httphelper.Config{
-			BaseURL:            fmt.Sprintf("%s://%s:%d/rest", "http", server.IPAddress, server.APIPort),
+			BaseURL:            fmt.Sprintf("%s://%s:%d/rest", protocol, server.IPAddress, server.APIPort),
 			Username:           server.Username,
 			Password:           server.Password,
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: !server.IsSSL,
 		})
 		if err != nil {
 			c.logger.Panic("Failed to create HTTP client", zap.Error(err))
 		}
 
-		c.clients[server.Name] = client
+		c.clients[server.ID] = client
 	}
 }
 
-// DeleteClient Remove the client for a specific server
-func (c *MwpClients) DeleteClient(serverName string) {
+// DeleteClient Remove the client for a specific server, by ID.
+func (c *MwpClients) DeleteClient(serverID uint) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	delete(c.clients, serverName)
+	delete(c.clients, serverID)
 }

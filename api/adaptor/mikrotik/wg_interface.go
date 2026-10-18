@@ -20,10 +20,10 @@ type WireGuardInterface struct {
 	Running    *string `json:"running,omitempty"`
 }
 
-func (a *Adaptor) FetchWgInterfaces(c context.Context) ([]WireGuardInterface, error) {
+func (s *ServerAdaptor) FetchWgInterfaces(c context.Context) ([]WireGuardInterface, error) {
 	var wgInterfaces []WireGuardInterface
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -37,10 +37,10 @@ func (a *Adaptor) FetchWgInterfaces(c context.Context) ([]WireGuardInterface, er
 	return wgInterfaces, nil
 }
 
-func (a *Adaptor) FetchWgInterface(c context.Context, interfaceID string) (*WireGuardInterface, error) {
+func (s *ServerAdaptor) FetchWgInterface(c context.Context, interfaceID string) (*WireGuardInterface, error) {
 	var wgInterface WireGuardInterface
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -54,10 +54,10 @@ func (a *Adaptor) FetchWgInterface(c context.Context, interfaceID string) (*Wire
 	return &wgInterface, nil
 }
 
-func (a *Adaptor) CreateWgInterface(c context.Context, wgInterface WireGuardInterface) (*WireGuardInterface, error) {
+func (s *ServerAdaptor) CreateWgInterface(c context.Context, wgInterface WireGuardInterface) (*WireGuardInterface, error) {
 	var createdInterface WireGuardInterface
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Put(
 		c,
@@ -72,10 +72,10 @@ func (a *Adaptor) CreateWgInterface(c context.Context, wgInterface WireGuardInte
 	return &createdInterface, nil
 }
 
-func (a *Adaptor) UpdateWgInterface(c context.Context, interfaceID string, wgInterface WireGuardInterface) (*WireGuardInterface, error) {
+func (s *ServerAdaptor) UpdateWgInterface(c context.Context, interfaceID string, wgInterface WireGuardInterface) (*WireGuardInterface, error) {
 	var updatedInterface WireGuardInterface
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Patch(
 		c,
@@ -90,8 +90,8 @@ func (a *Adaptor) UpdateWgInterface(c context.Context, interfaceID string, wgInt
 	return &updatedInterface, nil
 }
 
-func (a *Adaptor) DeleteWgInterface(c context.Context, interfaceID string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) DeleteWgInterface(c context.Context, interfaceID string) error {
+	httpClient := s.client()
 
 	err := httpClient.Delete(
 		c,
@@ -99,7 +99,7 @@ func (a *Adaptor) DeleteWgInterface(c context.Context, interfaceID string) error
 		nil,
 	)
 	if err != nil {
-		a.logger.Error("failed to delete wireguard peer", zap.Error(err))
+		s.adaptor.logger.Error("failed to delete wireguard peer", zap.Error(err))
 		return err
 	}
 

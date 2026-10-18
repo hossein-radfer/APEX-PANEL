@@ -68,7 +68,7 @@ func registerFakeRouterOSServer(t *testing.T, db *gorm.DB, handler http.HandlerF
 
 	mwpClients := common.NewMwpClients(db)
 	isSSL := false
-	mwpClients.SetClient(&schema.CreateServerRequest{
+	mwpClients.SetClient(server.ID, &schema.CreateServerRequest{
 		Name:      server.Name,
 		IPAddress: server.IPAddress,
 		APIPort:   port,

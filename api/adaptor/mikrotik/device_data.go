@@ -55,10 +55,10 @@ type IPAddress struct {
 	Network         string `json:"network"`
 }
 
-func (a *Adaptor) FetchDeviceInfo(c context.Context) (*SystemInfo, error) {
+func (s *ServerAdaptor) FetchDeviceInfo(c context.Context) (*SystemInfo, error) {
 	var systemInfo SystemInfo
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -72,10 +72,10 @@ func (a *Adaptor) FetchDeviceInfo(c context.Context) (*SystemInfo, error) {
 	return &systemInfo, nil
 }
 
-func (a *Adaptor) FetchDeviceIdentity(c context.Context) (*SystemIdentity, error) {
+func (s *ServerAdaptor) FetchDeviceIdentity(c context.Context) (*SystemIdentity, error) {
 	var systemIdentity SystemIdentity
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -89,10 +89,10 @@ func (a *Adaptor) FetchDeviceIdentity(c context.Context) (*SystemIdentity, error
 	return &systemIdentity, nil
 }
 
-func (a *Adaptor) FetchDNSConfig(c context.Context) (*DNSConfig, error) {
+func (s *ServerAdaptor) FetchDNSConfig(c context.Context) (*DNSConfig, error) {
 	var dnsConfig DNSConfig
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,
@@ -106,10 +106,10 @@ func (a *Adaptor) FetchDNSConfig(c context.Context) (*DNSConfig, error) {
 	return &dnsConfig, nil
 }
 
-func (a *Adaptor) FetchIPv4Addresses(c context.Context) ([]IPAddress, error) {
+func (s *ServerAdaptor) FetchIPv4Addresses(c context.Context) ([]IPAddress, error) {
 	var ipv4Address []IPAddress
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Get(
 		c,

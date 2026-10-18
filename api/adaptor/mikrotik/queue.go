@@ -15,10 +15,10 @@ type Queue struct {
 	MaxLimit *string `json:"max-limit,omitempty"`
 }
 
-func (a *Adaptor) CreateSimpleQueue(c context.Context, queue Queue) (*Queue, error) {
+func (s *ServerAdaptor) CreateSimpleQueue(c context.Context, queue Queue) (*Queue, error) {
 	var createdQueue Queue
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Put(
 		c,
@@ -33,10 +33,10 @@ func (a *Adaptor) CreateSimpleQueue(c context.Context, queue Queue) (*Queue, err
 	return &createdQueue, nil
 }
 
-func (a *Adaptor) UpdateSimpleQueue(c context.Context, queueID string, queue Queue) (*Queue, error) {
+func (s *ServerAdaptor) UpdateSimpleQueue(c context.Context, queueID string, queue Queue) (*Queue, error) {
 	var updatedQueue Queue
 
-	httpClient := a.mwpClients.GetClient(nil)
+	httpClient := s.client()
 
 	err := httpClient.Patch(
 		c,
@@ -51,8 +51,8 @@ func (a *Adaptor) UpdateSimpleQueue(c context.Context, queueID string, queue Que
 	return &updatedQueue, nil
 }
 
-func (a *Adaptor) DeleteSimpleQueue(c context.Context, queueID string) error {
-	httpClient := a.mwpClients.GetClient(nil)
+func (s *ServerAdaptor) DeleteSimpleQueue(c context.Context, queueID string) error {
+	httpClient := s.client()
 
 	err := httpClient.Delete(
 		c,

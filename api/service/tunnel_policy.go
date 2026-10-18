@@ -119,11 +119,17 @@ func NewTunnelPolicyService(db *gorm.DB) *TunnelPolicyService {
 	return &TunnelPolicyService{db: db}
 }
 
-// GetOrCreateDefault returns interfaceName's policy, creating one seeded
-// with DefaultTunnelPolicyConfig if none exists yet.
-func (s *TunnelPolicyService) GetOrCreateDefault(interfaceName string) (*model.TunnelPolicy, error) {
+// GetOrCreateDefault returns serverID's policy for interfaceName, creating
+// one seeded with DefaultTunnelPolicyConfig if none exists yet. Confirmed,
+// reported multi-server gap this closes: this used to look up (and
+// create) a policy keyed by InterfaceName alone, so the exact same
+// interface name on two different servers collided into ONE shared policy
+// row -- an admin's own remediation settings for one server's tunnel could
+// silently apply to (or be overwritten by) a same-named tunnel on a
+// completely different server.
+func (s *TunnelPolicyService) GetOrCreateDefault(serverID uint, interfaceName string) (*model.TunnelPolicy, error) {
 	var policy model.TunnelPolicy
-	err := s.db.Where("interface_name = ?", interfaceName).First(&policy).Error
+	err := s.db.Where("server_id = ? AND interface_name = ?", serverID, interfaceName).First(&policy).Error
 	if err == nil {
 		return &policy, nil
 	}
@@ -135,7 +141,7 @@ func (s *TunnelPolicyService) GetOrCreateDefault(interfaceName string) (*model.T
 	if err != nil {
 		return nil, err
 	}
-	policy = model.TunnelPolicy{InterfaceName: interfaceName, PolicyJSON: string(raw)}
+	policy = model.TunnelPolicy{ServerID: serverID, InterfaceName: interfaceName, PolicyJSON: string(raw)}
 	if err := s.db.Create(&policy).Error; err != nil {
 		return nil, err
 	}
@@ -156,9 +162,18 @@ func (s *TunnelPolicyService) Parse(policy *model.TunnelPolicy) TunnelPolicyConf
 	return config
 }
 
-func (s *TunnelPolicyService) List() ([]model.TunnelPolicy, error) {
+// List returns tunnel policies -- serverID is optional: nil returns every
+// server's policies (never merged by interface name -- same-named
+// interfaces on different servers always stay distinct rows, mirroring
+// TunnelHealthService.ListStatuses's own convention), a value scopes to
+// one server.
+func (s *TunnelPolicyService) List(serverID *uint) ([]model.TunnelPolicy, error) {
+	query := s.db.Order("interface_name asc")
+	if serverID != nil {
+		query = query.Where("server_id = ?", *serverID)
+	}
 	var policies []model.TunnelPolicy
-	if err := s.db.Order("interface_name asc").Find(&policies).Error; err != nil {
+	if err := query.Find(&policies).Error; err != nil {
 		return nil, err
 	}
 	return policies, nil

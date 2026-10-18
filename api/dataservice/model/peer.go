@@ -2,15 +2,32 @@ package model
 
 type Peer struct {
 	Model
-	UUID           string  `gorm:"type:varchar(36);uniqueIndex;not null"`
-	PeerID         string  `gorm:"type:varchar(255);uniqueIndex;not null"`
-	Disabled       bool    `gorm:"type:boolean;not null;default:false"`
-	Comment        *string `gorm:"type:text"`
-	Name           string  `gorm:"type:varchar(255);not null"`
-	PrivateKey     string  `gorm:"type:varchar(255);not null"`
-	PublicKey      string  `gorm:"type:varchar(255);not null"`
-	Interface      string  `gorm:"type:varchar(255);not null"`
-	AllowedAddress string  `gorm:"type:varchar(255);uniqueIndex;not null"`
+	UUID     string `gorm:"type:varchar(36);uniqueIndex;not null"`
+	// ServerID identifies which physical Mikrotik router this peer lives
+	// on -- see model.Interface.ServerID's own doc comment for the same
+	// reasoning. PeerID and AllowedAddress used to be globally unique on
+	// their own, implicitly assuming a single-server install; both are now
+	// scoped to (ServerID, value) so the same RouterOS .id or address range
+	// can independently exist on two different servers. Interface (below)
+	// deliberately stays a plain name, not a foreign key -- see
+	// Interface's own field doc comment just below for why.
+	ServerID   uint    `gorm:"uniqueIndex:idx_peer_server_peer_id;uniqueIndex:idx_peer_server_allowed_address;not null"`
+	PeerID     string  `gorm:"type:varchar(255);uniqueIndex:idx_peer_server_peer_id;not null"`
+	Disabled   bool    `gorm:"type:boolean;not null;default:false"`
+	Comment    *string `gorm:"type:text"`
+	Name       string  `gorm:"type:varchar(255);not null"`
+	PrivateKey string  `gorm:"type:varchar(255);not null"`
+	PublicKey  string  `gorm:"type:varchar(255);not null"`
+	// Interface is the RouterOS interface NAME this peer belongs to, not a
+	// foreign key into model.Interface -- matches this codebase's existing
+	// convention (config generation and RouterOS calls already address
+	// interfaces by name, never by model.Interface.ID), so introducing an
+	// InterfaceID FK here would be a larger, out-of-scope redesign. Always
+	// resolve the owning Interface row by (ServerID, Interface) together,
+	// never by Interface name alone, now that names are only unique per
+	// server.
+	Interface      string `gorm:"type:varchar(255);not null"`
+	AllowedAddress string `gorm:"type:varchar(255);uniqueIndex:idx_peer_server_allowed_address;not null"`
 	// Optional link to a reseller (owner) of this peer
 	ResellerID          *uint   `gorm:"index"`
 	DNSServers          *string `gorm:"type:varchar(255)"`

@@ -54,8 +54,8 @@ func NewConfigGenerator(db *gorm.DB, mikrotikAdaptor *mikrotik.Adaptor) *ConfigG
 // what clients received. Falls back to common.DefaultDns only if the
 // router read fails, so a transient RouterOS API hiccup can't block peer
 // creation/regeneration entirely.
-func resolveDnsServers(mikrotikAdaptor *mikrotik.Adaptor, logger *zap.Logger) string {
-	dnsConfig, err := mikrotikAdaptor.FetchDNSConfig(context.Background())
+func resolveDnsServers(mikrotikAdaptor *mikrotik.Adaptor, serverID uint, logger *zap.Logger) string {
+	dnsConfig, err := mikrotikAdaptor.ForServer(serverID).FetchDNSConfig(context.Background())
 	if err != nil || dnsConfig.Servers == "" {
 		logger.Warn("failed to fetch router DNS config, falling back to default", zap.Error(err))
 		return common.DefaultDns
@@ -102,7 +102,7 @@ func (c *ConfigGenerator) GetPeerConfig(id uint) (configPath string, err error) 
 // a numeric foreign key).
 func (c *ConfigGenerator) regeneratePeerConfigFile(peer model.Peer) error {
 	var iface model.Interface
-	if err := c.db.Where("name = ?", peer.Interface).First(&iface).Error; err != nil {
+	if err := c.db.Where("server_id = ? AND name = ?", peer.ServerID, peer.Interface).First(&iface).Error; err != nil {
 		return fmt.Errorf("failed to look up interface %q for peer regeneration: %w", peer.Interface, err)
 	}
 
@@ -122,7 +122,7 @@ func (c *ConfigGenerator) regeneratePeerConfigFile(peer model.Peer) error {
 // value creation uses if the two ever diverge, which is not this fix's
 // concern.
 func buildPeerConfigString(peer model.Peer, ifacePublicKey string, mikrotikAdaptor *mikrotik.Adaptor, logger *zap.Logger) string {
-	dnsServers := resolveDnsServers(mikrotikAdaptor, logger)
+	dnsServers := resolveDnsServers(mikrotikAdaptor, peer.ServerID, logger)
 	if peer.DNSServers != nil && *peer.DNSServers != "" {
 		dnsServers = *peer.DNSServers
 	}

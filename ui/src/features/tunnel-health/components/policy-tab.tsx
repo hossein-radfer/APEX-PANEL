@@ -316,10 +316,10 @@ function PolicyForm({ policy }: { policy: TunnelPolicy }) {
 // admin corrects a wrong detection threshold per the spec's own section
 // ب-11 philosophy: the engine never learns/adjusts itself, only an
 // explicit admin edit here changes behavior.
-export function PolicyTab() {
+export function PolicyTab({ serverId }: { serverId?: number }) {
   const { data: policies = [], isLoading } = useQuery({
-    queryKey: ['tunnel_ai_policies'],
-    queryFn: () => fetchTunnelPolicies(),
+    queryKey: ['tunnel_ai_policies', serverId],
+    queryFn: () => fetchTunnelPolicies(serverId),
   })
 
   if (isLoading) {

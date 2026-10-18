@@ -15,6 +15,7 @@ import LongText from '@/components/long-text'
 import { OfflineBadge, OnlineBadge, } from '@/features/peers/components/activity-badge.tsx'
 import { PeersTableRowActions } from '@/features/peers/components/peers-table-row-actions.tsx'
 import { ColoredBadge } from '@/features/shared-components/status-badge.tsx'
+import { ServerBadge } from '@/features/shared-components/server-badge.tsx'
 import { DataTableColumnHeader } from '@/features/shared-components/table/data-table-column-header.tsx'
 import { SimpleDialog } from '@/features/shared-components/table/dialogs/simple-dialog.tsx'
 import { useAuthStore } from '@/stores/authStore.ts'
@@ -65,8 +66,14 @@ export const peersColumns: ColumnDef<Peer>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='نام' />
     ),
-    cell: ({ row }) => {
-      const { name, is_online } = row.original
+    cell: ({ row, table }) => {
+      const { name, is_online, server_id, server_name } = row.original
+      // Only shown once the loaded rows actually span more than one
+      // server -- see InterfaceSelect/interfacesColumns' own identical
+      // convention for why.
+      const allRows = table.getCoreRowModel().rows.map((r) => r.original)
+      const showServerBadge =
+        new Set(allRows.map((r) => r.server_id)).size > 1
       return (
         <div className='flex w-fit items-center justify-center gap-3 text-nowrap'>
           {is_online ? (
@@ -74,7 +81,12 @@ export const peersColumns: ColumnDef<Peer>[] = [
           ) : (
             <OfflineBadge peerName={name} />
           )}
-          {name}
+          <div className='flex flex-col gap-0.5'>
+            <span>{name}</span>
+            {showServerBadge && (
+              <ServerBadge serverId={server_id} serverName={server_name} />
+            )}
+          </div>
         </div>
       )
     },

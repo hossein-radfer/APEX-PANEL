@@ -47,9 +47,11 @@ func NewTunnelHealthController(
 	}
 }
 
-func toTunnelHealthStatusResponse(status model.TunnelHealthStatus) schema.TunnelHealthStatusResponse {
+func toTunnelHealthStatusResponse(status model.TunnelHealthStatus, serverNames map[uint]string) schema.TunnelHealthStatusResponse {
 	return schema.TunnelHealthStatusResponse{
 		Id:                               status.ID,
+		ServerID:                         status.ServerID,
+		ServerName:                       serverNames[status.ServerID],
 		InterfaceName:                    status.InterfaceName,
 		Severity:                         status.Severity,
 		InterfaceRunning:                 status.InterfaceRunning,
@@ -60,9 +62,11 @@ func toTunnelHealthStatusResponse(status model.TunnelHealthStatus) schema.Tunnel
 	}
 }
 
-func toTunnelHealthEventResponse(event model.TunnelHealthEvent) schema.TunnelHealthEventResponse {
+func toTunnelHealthEventResponse(event model.TunnelHealthEvent, serverNames map[uint]string) schema.TunnelHealthEventResponse {
 	resp := schema.TunnelHealthEventResponse{
 		Id:            event.ID,
+		ServerID:      event.ServerID,
+		ServerName:    serverNames[event.ServerID],
 		InterfaceName: event.InterfaceName,
 		FromStatus:    event.FromStatus,
 		ToStatus:      event.ToStatus,
@@ -76,9 +80,11 @@ func toTunnelHealthEventResponse(event model.TunnelHealthEvent) schema.TunnelHea
 	return resp
 }
 
-func toTunnelActionLogResponse(action model.TunnelActionLog) schema.TunnelActionLogResponse {
+func toTunnelActionLogResponse(action model.TunnelActionLog, serverNames map[uint]string) schema.TunnelActionLogResponse {
 	return schema.TunnelActionLogResponse{
 		Id:                 action.ID,
+		ServerID:           action.ServerID,
+		ServerName:         serverNames[action.ServerID],
 		InterfaceName:      action.InterfaceName,
 		Level:              action.Level,
 		CommandDescription: action.CommandDescription,
@@ -89,9 +95,11 @@ func toTunnelActionLogResponse(action model.TunnelActionLog) schema.TunnelAction
 	}
 }
 
-func toTunnelPolicyResponse(policy model.TunnelPolicy, config service.TunnelPolicyConfig) schema.TunnelPolicyResponse {
+func toTunnelPolicyResponse(policy model.TunnelPolicy, config service.TunnelPolicyConfig, serverNames map[uint]string) schema.TunnelPolicyResponse {
 	return schema.TunnelPolicyResponse{
 		Id:            policy.ID,
+		ServerID:      policy.ServerID,
+		ServerName:    serverNames[policy.ServerID],
 		InterfaceName: policy.InterfaceName,
 		Detection: schema.TunnelPolicyDetectionResponse{
 			PingFailThreshold:          config.Detection.PingFailThreshold,
@@ -126,6 +134,24 @@ func toTunnelPolicyResponse(policy model.TunnelPolicy, config service.TunnelPoli
 	}
 }
 
+// parseRequiredServerIDParam reads a REQUIRED "server_id" query param --
+// unlike parseOptionalServerIDParam (whose nil means "fall back to this
+// install's one server" or "every server," depending on the caller), a
+// per-server resource like the graph inspector has no sensible fallback
+// once more than one server is registered, so a missing/invalid value is
+// a real 400, not a silent default.
+func parseRequiredServerIDParam(ctx echo.Context) (uint, error) {
+	raw := ctx.QueryParam("server_id")
+	if raw == "" {
+		return 0, ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
+	}
+	parsed, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, ctx.JSON(http.StatusBadRequest, schema.BadParamsErrorResponse)
+	}
+	return uint(parsed), nil
+}
+
 func toRedlineEntryResponse(entry model.ManagementRedlineEntry) schema.ManagementRedlineEntryResponse {
 	return schema.ManagementRedlineEntryResponse{
 		Id:      entry.ID,
@@ -140,14 +166,15 @@ func (c *TunnelHealthController) ListStatuses(ctx echo.Context) error {
 		return err
 	}
 
-	statuses, err := c.tunnelHealthService.ListStatuses()
+	statuses, err := c.tunnelHealthService.ListStatuses(parseOptionalServerIDParam(ctx))
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
+	serverNames := c.tunnelHealthService.ServerNamesByID()
 	resp := make([]schema.TunnelHealthStatusResponse, 0, len(statuses))
 	for _, status := range statuses {
-		resp = append(resp, toTunnelHealthStatusResponse(status))
+		resp = append(resp, toTunnelHealthStatusResponse(status, serverNames))
 	}
 	return ctx.JSON(http.StatusOK, schema.BasicResponseData[[]schema.TunnelHealthStatusResponse]{
 		BasicResponse: schema.OkBasicResponse,
@@ -167,14 +194,15 @@ func (c *TunnelHealthController) ListEvents(ctx echo.Context) error {
 		}
 	}
 
-	events, err := c.tunnelHealthService.ListEvents(limit)
+	events, err := c.tunnelHealthService.ListEvents(parseOptionalServerIDParam(ctx), limit)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
+	serverNames := c.tunnelHealthService.ServerNamesByID()
 	resp := make([]schema.TunnelHealthEventResponse, 0, len(events))
 	for _, event := range events {
-		resp = append(resp, toTunnelHealthEventResponse(event))
+		resp = append(resp, toTunnelHealthEventResponse(event, serverNames))
 	}
 	return ctx.JSON(http.StatusOK, schema.BasicResponseData[[]schema.TunnelHealthEventResponse]{
 		BasicResponse: schema.OkBasicResponse,
@@ -194,14 +222,15 @@ func (c *TunnelHealthController) ListActions(ctx echo.Context) error {
 		}
 	}
 
-	actions, err := c.tunnelHealthService.ListActions(limit)
+	actions, err := c.tunnelHealthService.ListActions(parseOptionalServerIDParam(ctx), limit)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
+	serverNames := c.tunnelHealthService.ServerNamesByID()
 	resp := make([]schema.TunnelActionLogResponse, 0, len(actions))
 	for _, action := range actions {
-		resp = append(resp, toTunnelActionLogResponse(action))
+		resp = append(resp, toTunnelActionLogResponse(action, serverNames))
 	}
 	return ctx.JSON(http.StatusOK, schema.BasicResponseData[[]schema.TunnelActionLogResponse]{
 		BasicResponse: schema.OkBasicResponse,
@@ -264,15 +293,16 @@ func (c *TunnelHealthController) ListPolicies(ctx echo.Context) error {
 		return err
 	}
 
-	policies, err := c.policyService.List()
+	policies, err := c.policyService.List(parseOptionalServerIDParam(ctx))
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
+	serverNames := c.tunnelHealthService.ServerNamesByID()
 	resp := make([]schema.TunnelPolicyResponse, 0, len(policies))
 	for _, policy := range policies {
 		config := c.policyService.Parse(&policy)
-		resp = append(resp, toTunnelPolicyResponse(policy, config))
+		resp = append(resp, toTunnelPolicyResponse(policy, config, serverNames))
 	}
 	return ctx.JSON(http.StatusOK, schema.BasicResponseData[[]schema.TunnelPolicyResponse]{
 		BasicResponse: schema.OkBasicResponse,
@@ -326,7 +356,7 @@ func (c *TunnelHealthController) UpdatePolicy(ctx echo.Context) error {
 
 	return ctx.JSON(http.StatusOK, schema.BasicResponseData[schema.TunnelPolicyResponse]{
 		BasicResponse: schema.OkBasicResponse,
-		Data:          toTunnelPolicyResponse(*policy, config),
+		Data:          toTunnelPolicyResponse(*policy, config, c.tunnelHealthService.ServerNamesByID()),
 	})
 }
 
@@ -376,15 +406,24 @@ func (c *TunnelHealthController) AddRedlineEntry(ctx echo.Context) error {
 }
 
 // GetLatestGraph returns the most recent dependency-graph snapshot for
-// the active server -- spec section ب-2/ب-3's own "دیده‌بان گراف"
+// the requested server -- spec section ب-2/ب-3's own "دیده‌بان گراف"
 // inspector, letting an admin see exactly what NAT/mangle/routing-table/
-// route/tunnel chain the engine last discovered.
+// route/tunnel chain the engine last discovered. server_id is a REQUIRED
+// query param (unlike the optional one on the list endpoints above) --
+// confirmed, reported multi-server gap this closes: this used to always
+// resolve "the" single active server internally, so the graph inspector
+// could only ever show one server no matter how many were registered.
 func (c *TunnelHealthController) GetLatestGraph(ctx echo.Context) error {
 	if forbidden, err := forbidUnlessAdmin(ctx); forbidden {
 		return err
 	}
 
-	snapshot, nodes, edges, err := c.graphService.LatestGraphForActiveServer()
+	serverID, err := parseRequiredServerIDParam(ctx)
+	if err != nil {
+		return err
+	}
+
+	snapshot, nodes, edges, err := c.graphService.LatestGraphForServer(serverID)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
@@ -428,13 +467,19 @@ func (c *TunnelHealthController) GetLatestGraph(ctx echo.Context) error {
 // GetTunnelMap returns the server-computed protocol/location/tunnel
 // hierarchy for the latest discovery snapshot -- the admin's own
 // explicit correction that the graph inspector must build this grouping
-// itself, not hand the UI a flat node/edge list to reassemble.
+// itself, not hand the UI a flat node/edge list to reassemble. server_id
+// is a REQUIRED query param, same reasoning as GetLatestGraph above.
 func (c *TunnelHealthController) GetTunnelMap(ctx echo.Context) error {
 	if forbidden, err := forbidUnlessAdmin(ctx); forbidden {
 		return err
 	}
 
-	snapshot, _, _, err := c.graphService.LatestGraphForActiveServer()
+	serverID, err := parseRequiredServerIDParam(ctx)
+	if err != nil {
+		return err
+	}
+
+	snapshot, _, _, err := c.graphService.LatestGraphForServer(serverID)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
@@ -559,12 +604,19 @@ func (c *TunnelHealthController) ListUserManagerProtocolEvents(ctx echo.Context)
 	})
 }
 
-// ListHealthScoreHistory returns one tunnel's own recent early-warning
-// health-score trend (oldest first) -- the panel's own trend-chart data
-// source, query-scoped to ?interface_name since scores are per-tunnel
-// history, unlike ListStatuses's own single current-state row per tunnel.
+// ListHealthScoreHistory returns one server's one tunnel's own recent
+// early-warning health-score trend (oldest first) -- the panel's own
+// trend-chart data source, query-scoped to ?interface_name since scores
+// are per-tunnel history, unlike ListStatuses's own single current-state
+// row per tunnel. server_id is a REQUIRED query param, same reasoning as
+// GetLatestGraph -- a bare interface name is ambiguous across servers.
 func (c *TunnelHealthController) ListHealthScoreHistory(ctx echo.Context) error {
 	if forbidden, err := forbidUnlessAdmin(ctx); forbidden {
+		return err
+	}
+
+	serverID, err := parseRequiredServerIDParam(ctx)
+	if err != nil {
 		return err
 	}
 
@@ -580,7 +632,7 @@ func (c *TunnelHealthController) ListHealthScoreHistory(ctx echo.Context) error 
 		}
 	}
 
-	scores, err := c.tunnelHealthService.ListHealthScoreHistory(interfaceName, limit)
+	scores, err := c.tunnelHealthService.ListHealthScoreHistory(serverID, interfaceName, limit)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
@@ -612,15 +664,18 @@ func (c *TunnelHealthController) ListIncidentDiagnoses(ctx echo.Context) error {
 		}
 	}
 
-	diagnoses, err := c.tunnelHealthService.ListIncidentDiagnoses(limit)
+	diagnoses, err := c.tunnelHealthService.ListIncidentDiagnoses(parseOptionalServerIDParam(ctx), limit)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
+	serverNames := c.tunnelHealthService.ServerNamesByID()
 	resp := make([]schema.TunnelIncidentDiagnosisResponse, 0, len(diagnoses))
 	for _, d := range diagnoses {
 		resp = append(resp, schema.TunnelIncidentDiagnosisResponse{
 			Id:            d.ID,
+			ServerID:      d.ServerID,
+			ServerName:    serverNames[d.ServerID],
 			InterfaceName: d.InterfaceName,
 			Cause:         d.Cause,
 			Evidence:      d.Evidence,
@@ -648,15 +703,18 @@ func (c *TunnelHealthController) ListBackupProbeResults(ctx echo.Context) error 
 		}
 	}
 
-	results, err := c.tunnelHealthService.ListBackupProbeResults(limit)
+	results, err := c.tunnelHealthService.ListBackupProbeResults(parseOptionalServerIDParam(ctx), limit)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, schema.InternalServerErrorResponse)
 	}
 
+	serverNames := c.tunnelHealthService.ServerNamesByID()
 	resp := make([]schema.TunnelBackupProbeResultResponse, 0, len(results))
 	for _, r := range results {
 		resp = append(resp, schema.TunnelBackupProbeResultResponse{
 			Id:              r.ID,
+			ServerID:        r.ServerID,
+			ServerName:      serverNames[r.ServerID],
 			InterfaceName:   r.InterfaceName,
 			BackupGatewayIP: r.BackupGatewayIP,
 			Reachable:       r.Reachable,

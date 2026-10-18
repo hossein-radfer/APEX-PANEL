@@ -96,11 +96,16 @@ export const createUserManagerAccountForReseller = async ({
   return parsed.data
 }
 
-export const bulkImportUserManagerAccounts = async (
+export const bulkImportUserManagerAccounts = async ({
+  file,
+  serverId,
+}: {
   file: File
-): Promise<BulkImportAccountsResult> => {
+  serverId?: number
+}): Promise<BulkImportAccountsResult> => {
   const formData = new FormData()
   formData.append('file', file)
+  if (serverId !== undefined) formData.append('server_id', String(serverId))
   const { data } = await axiosInstance.post(
     '/user-manager/account/bulk-import',
     formData,
@@ -113,12 +118,15 @@ export const bulkImportUserManagerAccounts = async (
 export const bulkImportUserManagerAccountsForReseller = async ({
   resellerId,
   file,
+  serverId,
 }: {
   resellerId: number
   file: File
+  serverId?: number
 }): Promise<BulkImportAccountsResult> => {
   const formData = new FormData()
   formData.append('file', file)
+  if (serverId !== undefined) formData.append('server_id', String(serverId))
   const { data } = await axiosInstance.post(
     `/user-manager/account/reseller/${resellerId}/bulk-import`,
     formData,
@@ -250,26 +258,36 @@ export const updateUserManagerAccountShareExpire = async (
   )
 }
 
-export const fetchUserManagerGroups = async (): Promise<
-  UserManagerGroup[]
-> => {
-  const { data } = await axiosInstance.get('/user-manager/group')
+// serverId is optional -- omitted falls back to this install's one server
+// server-side (see UserManagerService.ListGroups's own doc comment); the
+// UI starts sending it explicitly once more than one server is
+// registered.
+export const fetchUserManagerGroups = async (
+  serverId?: number
+): Promise<UserManagerGroup[]> => {
+  const { data } = await axiosInstance.get('/user-manager/group', {
+    params: serverId !== undefined ? { server_id: serverId } : undefined,
+  })
   const parsed = UserManagerGroupsResponseSchema.parse(data)
   return parsed.data || []
 }
 
-export const fetchUserManagerProfiles = async (): Promise<
-  UserManagerProfile[]
-> => {
-  const { data } = await axiosInstance.get('/user-manager/profile')
+export const fetchUserManagerProfiles = async (
+  serverId?: number
+): Promise<UserManagerProfile[]> => {
+  const { data } = await axiosInstance.get('/user-manager/profile', {
+    params: serverId !== undefined ? { server_id: serverId } : undefined,
+  })
   const parsed = UserManagerProfilesResponseSchema.parse(data)
   return parsed.data || []
 }
 
-export const fetchUserManagerProtocolConfigs = async (): Promise<
-  UserManagerProtocolConfig[]
-> => {
-  const { data } = await axiosInstance.get('/user-manager/protocol-config')
+export const fetchUserManagerProtocolConfigs = async (
+  serverId?: number
+): Promise<UserManagerProtocolConfig[]> => {
+  const { data } = await axiosInstance.get('/user-manager/protocol-config', {
+    params: serverId !== undefined ? { server_id: serverId } : undefined,
+  })
   const parsed = UserManagerProtocolConfigsResponseSchema.parse(data)
   return parsed.data || []
 }
@@ -350,15 +368,17 @@ export const fetchUserManagerAccountConfigPublic = async (
 
 export const uploadUserManagerProtocolCertificateFile = async ({
   protocol,
+  serverId,
   file,
 }: {
   protocol: ProtocolConfigProtocol
+  serverId: number
   file: File
 }): Promise<void> => {
   const formData = new FormData()
   formData.append('file', file)
   await axiosInstance.post(
-    `/user-manager/protocol-config/${protocol}/certificate`,
+    `/user-manager/protocol-config/${protocol}/${serverId}/certificate`,
     formData,
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
@@ -366,41 +386,52 @@ export const uploadUserManagerProtocolCertificateFile = async ({
 
 export const uploadUserManagerProtocolClientAppFile = async ({
   protocol,
+  serverId,
   file,
 }: {
   protocol: ProtocolConfigProtocol
+  serverId: number
   file: File
 }): Promise<void> => {
   const formData = new FormData()
   formData.append('file', file)
   await axiosInstance.post(
-    `/user-manager/protocol-config/${protocol}/client-app`,
+    `/user-manager/protocol-config/${protocol}/${serverId}/client-app`,
     formData,
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
 }
 
-export const deleteUserManagerProtocolCertificateFile = async (
+export const deleteUserManagerProtocolCertificateFile = async ({
+  protocol,
+  serverId,
+}: {
   protocol: ProtocolConfigProtocol
-): Promise<void> => {
+  serverId: number
+}): Promise<void> => {
   await axiosInstance.delete(
-    `/user-manager/protocol-config/${protocol}/certificate`
+    `/user-manager/protocol-config/${protocol}/${serverId}/certificate`
   )
 }
 
-export const deleteUserManagerProtocolClientAppFile = async (
+export const deleteUserManagerProtocolClientAppFile = async ({
+  protocol,
+  serverId,
+}: {
   protocol: ProtocolConfigProtocol
-): Promise<void> => {
+  serverId: number
+}): Promise<void> => {
   await axiosInstance.delete(
-    `/user-manager/protocol-config/${protocol}/client-app`
+    `/user-manager/protocol-config/${protocol}/${serverId}/client-app`
   )
 }
 
 export const fetchUserManagerProtocolCertificateFile = async (
-  protocol: ProtocolConfigProtocol
+  protocol: ProtocolConfigProtocol,
+  serverId: number
 ): Promise<DownloadedFile> => {
   const response = await axiosInstance.get(
-    `/user-manager/protocol-config/${protocol}/certificate`,
+    `/user-manager/protocol-config/${protocol}/${serverId}/certificate`,
     { responseType: 'blob' }
   )
   return {
@@ -412,10 +443,11 @@ export const fetchUserManagerProtocolCertificateFile = async (
 }
 
 export const fetchUserManagerProtocolClientAppFile = async (
-  protocol: ProtocolConfigProtocol
+  protocol: ProtocolConfigProtocol,
+  serverId: number
 ): Promise<DownloadedFile> => {
   const response = await axiosInstance.get(
-    `/user-manager/protocol-config/${protocol}/client-app`,
+    `/user-manager/protocol-config/${protocol}/${serverId}/client-app`,
     { responseType: 'blob' }
   )
   return {

@@ -231,19 +231,19 @@ func (w *WgPeer) TogglePeerStatus(id uint, resellerID *uint) error {
 		Disabled: disabled,
 	}
 
-	if _, err := w.mikrotikAdaptor.UpdateWgPeer(context.Background(), peer.PeerID, wgPeer); err != nil {
+	if _, err := w.mikrotikAdaptor.ForServer(peer.ServerID).UpdateWgPeer(context.Background(), peer.PeerID, wgPeer); err != nil {
 		w.logger.Error("failed to update wireguard peer in Mikrotik", zap.Error(err))
 		return fmt.Errorf("failed to update wireguard peer: %w", err)
 	}
 
 	if peer.SchedulerID != nil {
-		if _, err := w.mikrotikAdaptor.UpdateScheduler(context.Background(), *peer.SchedulerID, wgScheduler); err != nil {
+		if _, err := w.mikrotikAdaptor.ForServer(peer.ServerID).UpdateScheduler(context.Background(), *peer.SchedulerID, wgScheduler); err != nil {
 			w.logger.Error("failed to update scheduler for wireguard peer", zap.Error(err))
 			return fmt.Errorf("failed to update scheduler: %w", err)
 		}
 	}
 	if peer.QueueID != nil {
-		if _, err := w.mikrotikAdaptor.UpdateSimpleQueue(context.Background(), *peer.QueueID, wgQueue); err != nil {
+		if _, err := w.mikrotikAdaptor.ForServer(peer.ServerID).UpdateSimpleQueue(context.Background(), *peer.QueueID, wgQueue); err != nil {
 			w.logger.Error("failed to update queue for wireguard peer", zap.Error(err))
 			return fmt.Errorf("failed to update queue: %w", err)
 		}
@@ -336,7 +336,7 @@ func (w *WgPeer) resolveNextFreeAllowedAddress(interfaceId uint, exclude map[str
 	}
 
 	var peers []model.Peer
-	if err := w.db.Find(&peers, "interface = ?", iface.Name).Error; err != nil {
+	if err := w.db.Find(&peers, "server_id = ? AND interface = ?", iface.ServerID, iface.Name).Error; err != nil {
 		w.logger.Error("failed to query peers from database", zap.Error(err))
 		return "", fmt.Errorf("failed to find peers: %w", err)
 	}
@@ -491,7 +491,7 @@ func (w *WgPeer) GetPeerDetails(uuid string) (*schema.PeerDetailsResponse, error
 		usagePercent = utils.Ptr(fmt.Sprintf("%.1f", percent))
 	}
 
-	mtPeer, err := w.mikrotikAdaptor.FetchWgPeer(context.Background(), peer.PeerID)
+	mtPeer, err := w.mikrotikAdaptor.ForServer(peer.ServerID).FetchWgPeer(context.Background(), peer.PeerID)
 	if err != nil {
 		w.logger.Error("failed to fetch wireguard peer from Mikrotik", zap.String("peer_id", peer.PeerID), zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch wireguard peer: %w", err)
@@ -550,12 +550,6 @@ func (w *WgPeer) locationLabelsByKey() map[string]string {
 }
 
 func (w *WgPeer) GetPeers(resellerID *uint) (*[]schema.PeerResponse, error) {
-	peers, err := w.mikrotikAdaptor.FetchWgPeers(context.Background())
-	if err != nil {
-		w.logger.Error("failed to fetch wireguard peers from Mikrotik", zap.Error(err))
-		return nil, fmt.Errorf("failed to fetch wireguard peers: %w", err)
-	}
-
 	var dbPeers []model.Peer
 	peerQuery := w.db.Model(&model.Peer{})
 	if resellerID != nil {
@@ -575,24 +569,50 @@ func (w *WgPeer) GetPeers(resellerID *uint) (*[]schema.PeerResponse, error) {
 		w.logger.Error("failed to fetch peers from database", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch peers from database: %w", err)
 	}
-
-	dbPeerMap := make(map[string]model.Peer, len(dbPeers))
-	for _, p := range dbPeers {
-		dbPeerMap[p.PeerID] = p
+	if len(dbPeers) == 0 {
+		return &[]schema.PeerResponse{}, nil
 	}
 
+	// A RouterOS peer's own ".id" (mikrotik.WireGuardPeer.ID) is only
+	// unique WITHIN one router -- now that peers can live on more than one
+	// server, the live lookup below is keyed by (ServerID, PeerID) together,
+	// never by PeerID alone, to avoid matching a DB row against a
+	// same-numbered peer that actually lives on a different server.
+	serverIDs := make(map[uint]struct{}, len(dbPeers))
+	for _, p := range dbPeers {
+		serverIDs[p.ServerID] = struct{}{}
+	}
+
+	type dbPeerKey struct {
+		serverID uint
+		peerID   string
+	}
+	liveByKey := make(map[dbPeerKey]mikrotik.WireGuardPeer, len(dbPeers))
+	for serverID := range serverIDs {
+		livePeers, err := w.mikrotikAdaptor.ForServer(serverID).FetchWgPeers(context.Background())
+		if err != nil {
+			w.logger.Error("failed to fetch wireguard peers from Mikrotik", zap.Uint("server_id", serverID), zap.Error(err))
+			continue
+		}
+		for _, lp := range livePeers {
+			liveByKey[dbPeerKey{serverID: serverID, peerID: lp.ID}] = lp
+		}
+	}
+
+	serverNames := w.serverNamesByID()
+
 	var wgPeers []schema.PeerResponse
-	for _, peer := range peers {
-		dbPeer, exists := dbPeerMap[peer.ID]
+	for _, dbPeer := range dbPeers {
+		livePeer, exists := liveByKey[dbPeerKey{serverID: dbPeer.ServerID, peerID: dbPeer.PeerID}]
 		if !exists {
 			continue
 		}
 
-		wgPeer := w.transformPeerToResponse(dbPeer)
+		wgPeer := w.transformPeerToResponseWithServerNames(dbPeer, serverNames)
 
-		_, isOnline, err := w.handshakeData(&peer)
+		_, isOnline, err := w.handshakeData(&livePeer)
 		if err != nil {
-			w.logger.Error("failed to parse last handshake duration", zap.String("peer_id", peer.ID), zap.Error(err))
+			w.logger.Error("failed to parse last handshake duration", zap.String("peer_id", livePeer.ID), zap.Error(err))
 			continue
 		}
 
@@ -620,25 +640,37 @@ func (w *WgPeer) GetPeersByReseller(resellerID uint) (*[]schema.PeerResponse, er
 // grand totals (TotalOnlinePeers/TotalTodayUsageGB) are always computed
 // across ALL resellers, not just the current page.
 func (w *WgPeer) GetResellerActivitySummary(page, pageSize int) (*schema.ResellerActivitySummaryResponse, error) {
-	mtPeers, err := w.mikrotikAdaptor.FetchWgPeers(context.Background())
-	if err != nil {
-		w.logger.Error("failed to fetch wireguard peers from Mikrotik", zap.Error(err))
-		return nil, fmt.Errorf("failed to fetch wireguard peers: %w", err)
-	}
-
-	onlineByPeerID := make(map[string]bool, len(mtPeers))
-	for i := range mtPeers {
-		_, isOnline, err := w.handshakeData(&mtPeers[i])
-		if err != nil {
-			continue
-		}
-		onlineByPeerID[mtPeers[i].ID] = isOnline
-	}
-
 	var dbPeers []model.Peer
 	if err := w.db.Where("reseller_id IS NOT NULL").Find(&dbPeers).Error; err != nil {
 		w.logger.Error("failed to fetch reseller-owned peers", zap.Error(err))
 		return nil, err
+	}
+
+	// onlineByServerAndPeerID is keyed by (ServerID, PeerID) together, not
+	// PeerID alone -- see GetPeers' own doc comment on the same RouterOS
+	// ".id"-is-only-unique-per-router issue.
+	type serverPeerKey struct {
+		serverID uint
+		peerID   string
+	}
+	serverIDs := make(map[uint]struct{}, len(dbPeers))
+	for _, p := range dbPeers {
+		serverIDs[p.ServerID] = struct{}{}
+	}
+	onlineByServerAndPeerID := make(map[serverPeerKey]bool, len(dbPeers))
+	for serverID := range serverIDs {
+		mtPeers, err := w.mikrotikAdaptor.ForServer(serverID).FetchWgPeers(context.Background())
+		if err != nil {
+			w.logger.Error("failed to fetch wireguard peers from Mikrotik", zap.Uint("server_id", serverID), zap.Error(err))
+			continue
+		}
+		for i := range mtPeers {
+			_, isOnline, err := w.handshakeData(&mtPeers[i])
+			if err != nil {
+				continue
+			}
+			onlineByServerAndPeerID[serverPeerKey{serverID: serverID, peerID: mtPeers[i].ID}] = isOnline
+		}
 	}
 
 	var resellers []model.Reseller
@@ -679,7 +711,7 @@ func (w *WgPeer) GetResellerActivitySummary(page, pageSize int) (*schema.Reselle
 			countsByReseller[*p.ResellerID] = c
 		}
 		c.total++
-		if onlineByPeerID[p.PeerID] {
+		if onlineByServerAndPeerID[serverPeerKey{serverID: p.ServerID, peerID: p.PeerID}] {
 			c.online++
 		}
 	}
@@ -737,30 +769,41 @@ func (w *WgPeer) GetResellerActivitySummary(page, pageSize int) (*schema.Reselle
 // GetSelfActivity reports a single reseller's own online-peer count and
 // today's traffic usage. Used by the reseller dashboard.
 func (w *WgPeer) GetSelfActivity(resellerID uint) (*schema.SelfActivityResponse, error) {
-	mtPeers, err := w.mikrotikAdaptor.FetchWgPeers(context.Background())
-	if err != nil {
-		w.logger.Error("failed to fetch wireguard peers from Mikrotik", zap.Error(err))
-		return nil, fmt.Errorf("failed to fetch wireguard peers: %w", err)
-	}
-
-	onlineByPeerID := make(map[string]bool, len(mtPeers))
-	for i := range mtPeers {
-		_, isOnline, err := w.handshakeData(&mtPeers[i])
-		if err != nil {
-			continue
-		}
-		onlineByPeerID[mtPeers[i].ID] = isOnline
-	}
-
 	var dbPeers []model.Peer
 	if err := w.db.Where("reseller_id = ?", resellerID).Find(&dbPeers).Error; err != nil {
 		w.logger.Error("failed to fetch reseller peers", zap.Uint("resellerID", resellerID), zap.Error(err))
 		return nil, err
 	}
 
+	// Keyed by (ServerID, PeerID) together -- see GetPeers' own doc comment
+	// on the same RouterOS ".id"-is-only-unique-per-router issue.
+	type serverPeerKey struct {
+		serverID uint
+		peerID   string
+	}
+	serverIDs := make(map[uint]struct{}, len(dbPeers))
+	for _, p := range dbPeers {
+		serverIDs[p.ServerID] = struct{}{}
+	}
+	onlineByServerAndPeerID := make(map[serverPeerKey]bool, len(dbPeers))
+	for serverID := range serverIDs {
+		mtPeers, err := w.mikrotikAdaptor.ForServer(serverID).FetchWgPeers(context.Background())
+		if err != nil {
+			w.logger.Error("failed to fetch wireguard peers from Mikrotik", zap.Uint("server_id", serverID), zap.Error(err))
+			continue
+		}
+		for i := range mtPeers {
+			_, isOnline, err := w.handshakeData(&mtPeers[i])
+			if err != nil {
+				continue
+			}
+			onlineByServerAndPeerID[serverPeerKey{serverID: serverID, peerID: mtPeers[i].ID}] = isOnline
+		}
+	}
+
 	online := 0
 	for _, p := range dbPeers {
-		if onlineByPeerID[p.PeerID] {
+		if onlineByServerAndPeerID[serverPeerKey{serverID: p.ServerID, peerID: p.PeerID}] {
 			online++
 		}
 	}
@@ -954,7 +997,7 @@ func (w *WgPeer) CreatePeer(req *schema.CreatePeerRequest, resellerID *uint) (*s
 	// requirement, so 100+ simultaneous purchases (e.g. a bot announced
 	// in a channel) each still get a distinct real address instead of
 	// mostly failing.
-	if err := w.ensureAllowedAddressIsUnique(req.AllowedAddress); err != nil {
+	if err := w.ensureAllowedAddressIsUnique(iface.ServerID, req.AllowedAddress); err != nil {
 		freshAddress, resolveErr := w.resolveNextFreeAllowedAddress(req.InterfaceId, nil)
 		if resolveErr != nil {
 			return nil, resolveErr
@@ -975,15 +1018,15 @@ func (w *WgPeer) CreatePeer(req *schema.CreatePeerRequest, resellerID *uint) (*s
 		return nil, err
 	}
 
-	schedulerId, err := w.scheduler.createScheduler(mtPeer.ID, mtPeer.Name, req.ExpireTime)
+	schedulerId, err := w.scheduler.createScheduler(iface.ServerID, mtPeer.ID, mtPeer.Name, req.ExpireTime)
 	if err != nil {
-		w.cleanupOrphanedMikrotikPeer(mtPeer.ID)
+		w.cleanupOrphanedMikrotikPeer(iface.ServerID, mtPeer.ID)
 		return nil, err
 	}
 
-	queueId, err := w.queue.createQueue(mtPeer.Name, mtPeer.AllowedAddress, req.DownloadBandwidth, req.UploadBandwidth)
+	queueId, err := w.queue.createQueue(iface.ServerID, mtPeer.Name, mtPeer.AllowedAddress, req.DownloadBandwidth, req.UploadBandwidth)
 	if err != nil {
-		w.cleanupOrphanedMikrotikPeer(mtPeer.ID)
+		w.cleanupOrphanedMikrotikPeer(iface.ServerID, mtPeer.ID)
 		return nil, err
 	}
 
@@ -998,7 +1041,7 @@ func (w *WgPeer) CreatePeer(req *schema.CreatePeerRequest, resellerID *uint) (*s
 		// surface it to GetNewPeerAllowedAddress again. See
 		// interfaceLocks' own doc comment for the full incident this
 		// class of orphaning caused.
-		w.cleanupOrphanedMikrotikPeer(mtPeer.ID)
+		w.cleanupOrphanedMikrotikPeer(iface.ServerID, mtPeer.ID)
 		return nil, err
 	}
 
@@ -1029,8 +1072,8 @@ func isMikrotikNotFoundError(err error) bool {
 // admin needs to see, not a secondary cleanup failure, and an orphan left
 // behind by a failed cleanup is still strictly better than the alternative
 // (never even trying).
-func (w *WgPeer) cleanupOrphanedMikrotikPeer(peerID string) {
-	if err := w.mikrotikAdaptor.DeleteWgPeer(context.Background(), peerID); err != nil {
+func (w *WgPeer) cleanupOrphanedMikrotikPeer(serverID uint, peerID string) {
+	if err := w.mikrotikAdaptor.ForServer(serverID).DeleteWgPeer(context.Background(), peerID); err != nil {
 		w.logger.Error("failed to clean up orphaned mikrotik peer after a later step failed -- this peer/address is now stranded on the router with no DB row",
 			zap.String("mikrotik_peer_id", peerID), zap.Error(err))
 	}
@@ -1043,7 +1086,7 @@ func (w *WgPeer) UpdatePeer(id uint, req *schema.UpdatePeerRequest, resellerID *
 		return nil, err
 	}
 
-	if err := w.updateMikrotikPeer(peer.PeerID, req); err != nil {
+	if err := w.updateMikrotikPeer(peer.ServerID, peer.PeerID, req); err != nil {
 		return nil, err
 	}
 
@@ -1089,15 +1132,15 @@ func (w *WgPeer) DeletePeer(id uint, resellerID *uint) error {
 	// RouterOS down) still aborts the delete, since that peer's scheduler/
 	// queue may well still be live and orphaning it on the router would be
 	// a real leak.
-	if err := w.scheduler.deleteScheduler(peer.SchedulerID); err != nil && !isMikrotikNotFoundError(err) {
+	if err := w.scheduler.deleteScheduler(peer.ServerID, peer.SchedulerID); err != nil && !isMikrotikNotFoundError(err) {
 		return fmt.Errorf("failed to delete scheduler: %w", err)
 	}
 
-	if err := w.queue.deleteQueue(peer.QueueID); err != nil && !isMikrotikNotFoundError(err) {
+	if err := w.queue.deleteQueue(peer.ServerID, peer.QueueID); err != nil && !isMikrotikNotFoundError(err) {
 		return fmt.Errorf("failed to delete simple queue: %w", err)
 	}
 
-	if err := w.mikrotikAdaptor.DeleteWgPeer(context.Background(), peer.PeerID); err != nil && !isMikrotikNotFoundError(err) {
+	if err := w.mikrotikAdaptor.ForServer(peer.ServerID).DeleteWgPeer(context.Background(), peer.PeerID); err != nil && !isMikrotikNotFoundError(err) {
 		w.logger.Error("failed to delete wireguard peer from Mikrotik", zap.Error(err))
 		return fmt.Errorf("failed to delete wireguard peer: %w", err)
 	}
@@ -1153,21 +1196,40 @@ func (w *WgPeer) BulkDeletePeers(ids []uint, resellerID *uint) (deleted []uint, 
 }
 
 func (w *WgPeer) GetPeersData() (*schema.PeerStatsResponse, error) {
-	peers, err := w.mikrotikAdaptor.FetchWgPeers(context.Background())
-	if err != nil {
-		w.logger.Error("failed to fetch peers from mikrotik", zap.Error(err))
-		return nil, fmt.Errorf("failed to fetch peers from mikrotik: %w", err)
-	}
-
 	var dbPeers []model.Peer
 	if err := w.db.Find(&dbPeers).Error; err != nil {
 		w.logger.Error("failed to fetch peers from database", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch peers from database: %w", err)
 	}
 
-	dbPeerMap := make(map[string]model.Peer)
+	// Keyed by (ServerID, PeerID) together -- see GetPeers' own doc comment
+	// on the same RouterOS ".id"-is-only-unique-per-router issue.
+	type serverPeerKey struct {
+		serverID uint
+		peerID   string
+	}
+	type livePeerWithServer struct {
+		serverID uint
+		peer     mikrotik.WireGuardPeer
+	}
+	serverIDs := make(map[uint]struct{})
 	for _, p := range dbPeers {
-		dbPeerMap[p.PeerID] = p
+		serverIDs[p.ServerID] = struct{}{}
+	}
+	dbPeerMap := make(map[serverPeerKey]model.Peer, len(dbPeers))
+	for _, p := range dbPeers {
+		dbPeerMap[serverPeerKey{serverID: p.ServerID, peerID: p.PeerID}] = p
+	}
+	var peers []livePeerWithServer
+	for serverID := range serverIDs {
+		livePeers, err := w.mikrotikAdaptor.ForServer(serverID).FetchWgPeers(context.Background())
+		if err != nil {
+			w.logger.Error("failed to fetch peers from mikrotik", zap.Uint("server_id", serverID), zap.Error(err))
+			continue
+		}
+		for _, lp := range livePeers {
+			peers = append(peers, livePeerWithServer{serverID: serverID, peer: lp})
+		}
 	}
 
 	type peerWithDuration struct {
@@ -1180,8 +1242,9 @@ func (w *WgPeer) GetPeersData() (*schema.PeerStatsResponse, error) {
 		disabledPeers []mikrotik.WireGuardPeer
 	)
 
-	for _, peer := range peers {
-		dbPeer, exists := dbPeerMap[peer.ID]
+	for _, item := range peers {
+		peer := item.peer
+		dbPeer, exists := dbPeerMap[serverPeerKey{serverID: item.serverID, peerID: peer.ID}]
 		if !exists {
 			w.logger.Warn("peer not found in database", zap.String("peerID", peer.ID))
 			continue
@@ -1254,9 +1317,9 @@ func (w *WgPeer) isInterfaceAssignedToReseller(resellerID uint, interfaceID uint
 	return count > 0, nil
 }
 
-func (w *WgPeer) ensureAllowedAddressIsUnique(address string) error {
+func (w *WgPeer) ensureAllowedAddressIsUnique(serverID uint, address string) error {
 	var existing model.Peer
-	if err := w.db.Where("allowed_address = ?", address).First(&existing).Error; err == nil {
+	if err := w.db.Where("server_id = ? AND allowed_address = ?", serverID, address).First(&existing).Error; err == nil {
 		return fmt.Errorf("allowed address %s is already in use by peer %s", address, existing.Name)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		w.logger.Error("allowed address lookup failed", zap.Error(err))
@@ -1265,7 +1328,7 @@ func (w *WgPeer) ensureAllowedAddressIsUnique(address string) error {
 	return nil
 }
 
-func (w *WgPeer) createMikrotikPeer(req *schema.CreatePeerRequest, ifaceName string) (*mikrotik.WireGuardPeer, error) {
+func (w *WgPeer) createMikrotikPeer(serverID uint, req *schema.CreatePeerRequest, ifaceName string) (*mikrotik.WireGuardPeer, error) {
 	peer := &mikrotik.WireGuardPeer{
 		Comment:        req.Comment,
 		Name:           req.Name,
@@ -1275,7 +1338,7 @@ func (w *WgPeer) createMikrotikPeer(req *schema.CreatePeerRequest, ifaceName str
 		PrivateKey:     &req.PrivateKey,
 		PublicKey:      req.PublicKey,
 	}
-	return w.mikrotikAdaptor.CreateWgPeer(context.Background(), *peer)
+	return w.mikrotikAdaptor.ForServer(serverID).CreateWgPeer(context.Background(), *peer)
 }
 
 // createMikrotikPeerWithRetry wraps createMikrotikPeer with a short,
@@ -1309,7 +1372,7 @@ func (w *WgPeer) createMikrotikPeerWithRetry(req *schema.CreatePeerRequest, ifac
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		mtPeer, err := w.createMikrotikPeer(req, iface.Name)
+		mtPeer, err := w.createMikrotikPeer(iface.ServerID, req, iface.Name)
 		if err == nil {
 			return mtPeer, nil
 		}
@@ -1354,6 +1417,7 @@ func (w *WgPeer) buildAndStoreDbPeer(req *schema.CreatePeerRequest, iface model.
 
 	dbPeer := model.Peer{
 		UUID:                uuid.New().String(),
+		ServerID:            iface.ServerID,
 		PeerID:              mtPeer.ID,
 		Disabled:            disabled,
 		Comment:             mtPeer.Comment,
@@ -1385,7 +1449,7 @@ func (w *WgPeer) buildAndStoreDbPeer(req *schema.CreatePeerRequest, iface model.
 }
 
 func (w *WgPeer) generatePeerAssets(privateKey string, peer model.Peer, ifacePubKey string) error {
-	dnsServers := resolveDnsServers(w.mikrotikAdaptor, w.logger)
+	dnsServers := resolveDnsServers(w.mikrotikAdaptor, peer.ServerID, w.logger)
 	if peer.DNSServers != nil && *peer.DNSServers != "" {
 		dnsServers = *peer.DNSServers
 	}
@@ -1408,7 +1472,7 @@ func (w *WgPeer) generatePeerAssets(privateKey string, peer model.Peer, ifacePub
 	return w.qrCodeGenerator.BuildPeerQRCode(peerConfig, peer.UUID)
 }
 
-func (w *WgPeer) updateMikrotikPeer(peerID string, req *schema.UpdatePeerRequest) error {
+func (w *WgPeer) updateMikrotikPeer(serverID uint, peerID string, req *schema.UpdatePeerRequest) error {
 	wgPeer := mikrotik.WireGuardPeer{}
 
 	if req.Disabled != nil {
@@ -1429,7 +1493,7 @@ func (w *WgPeer) updateMikrotikPeer(peerID string, req *schema.UpdatePeerRequest
 		wgPeer.PresharedKey = req.PresharedKey
 	}
 
-	_, err := w.mikrotikAdaptor.UpdateWgPeer(context.Background(), peerID, wgPeer)
+	_, err := w.mikrotikAdaptor.ForServer(serverID).UpdateWgPeer(context.Background(), peerID, wgPeer)
 	if err != nil {
 		w.logger.Error("failed to update wireguard peer in Mikrotik", zap.Error(err))
 	}
@@ -1439,7 +1503,7 @@ func (w *WgPeer) updateMikrotikPeer(peerID string, req *schema.UpdatePeerRequest
 
 func (w *WgPeer) handleScheduler(peer *model.Peer, req *schema.UpdatePeerRequest) (*string, error) {
 	if req.ExpireTime == nil && peer.SchedulerID != nil {
-		err := w.scheduler.deleteScheduler(peer.SchedulerID)
+		err := w.scheduler.deleteScheduler(peer.ServerID, peer.SchedulerID)
 		if err != nil {
 			w.logger.Error("failed to delete scheduler for wireguard peer", zap.Error(err))
 			return peer.SchedulerID, err
@@ -1448,11 +1512,11 @@ func (w *WgPeer) handleScheduler(peer *model.Peer, req *schema.UpdatePeerRequest
 	}
 
 	if req.ExpireTime != nil && peer.SchedulerID == nil {
-		return w.scheduler.createScheduler(peer.PeerID, peer.Name, req.ExpireTime)
+		return w.scheduler.createScheduler(peer.ServerID, peer.PeerID, peer.Name, req.ExpireTime)
 	}
 
 	if req.ExpireTime != nil && peer.SchedulerID != nil {
-		err := w.scheduler.updateScheduler(peer.SchedulerID, req.ExpireTime)
+		err := w.scheduler.updateScheduler(peer.ServerID, peer.SchedulerID, req.ExpireTime)
 		if err != nil {
 			w.logger.Error("failed to update scheduler for wireguard peer", zap.Error(err))
 			return peer.SchedulerID, err
@@ -1469,7 +1533,7 @@ func (w *WgPeer) handleQueue(peer *model.Peer, req *schema.UpdatePeerRequest) (*
 
 	if download == nil && upload == nil {
 		if queueID != nil {
-			err := w.queue.deleteQueue(queueID)
+			err := w.queue.deleteQueue(peer.ServerID, queueID)
 			if err != nil {
 				w.logger.Error("failed to delete queue for wireguard peer", zap.Error(err))
 				return queueID, err
@@ -1479,7 +1543,7 @@ func (w *WgPeer) handleQueue(peer *model.Peer, req *schema.UpdatePeerRequest) (*
 	}
 
 	if queueID == nil {
-		newQueueID, err := w.queue.createQueue(peer.Name, peer.AllowedAddress, download, upload)
+		newQueueID, err := w.queue.createQueue(peer.ServerID, peer.Name, peer.AllowedAddress, download, upload)
 		if err != nil {
 			w.logger.Error("failed to create queue for wireguard peer", zap.Error(err))
 			return nil, err
@@ -1488,7 +1552,7 @@ func (w *WgPeer) handleQueue(peer *model.Peer, req *schema.UpdatePeerRequest) (*
 	}
 
 	if !w.bandwidthsEqual(peer.DownloadBandwidth, download) || !w.bandwidthsEqual(peer.UploadBandwidth, upload) {
-		err := w.queue.updateQueue(queueID, download, upload)
+		err := w.queue.updateQueue(peer.ServerID, queueID, download, upload)
 		if err != nil {
 			w.logger.Error("failed to update queue for wireguard peer", zap.Error(err))
 			return queueID, err
@@ -1534,7 +1598,27 @@ func (w *WgPeer) preparePeerUpdate(peer *model.Peer, req *schema.UpdatePeerReque
 	return updateData
 }
 
+// serverNamesByID returns every registered server's Name keyed by ID, for
+// denormalizing PeerResponse.ServerName without an N+1 query per peer --
+// mirrors WgInterface.serverNamesByID exactly.
+func (w *WgPeer) serverNamesByID() map[uint]string {
+	var servers []model.Server
+	if err := w.db.Find(&servers).Error; err != nil {
+		w.logger.Warn("failed to fetch servers for name lookup", zap.Error(err))
+		return map[uint]string{}
+	}
+	names := make(map[uint]string, len(servers))
+	for _, s := range servers {
+		names[s.ID] = s.Name
+	}
+	return names
+}
+
 func (w *WgPeer) transformPeerToResponse(peer model.Peer) schema.PeerResponse {
+	return w.transformPeerToResponseWithServerNames(peer, w.serverNamesByID())
+}
+
+func (w *WgPeer) transformPeerToResponseWithServerNames(peer model.Peer, serverNames map[uint]string) schema.PeerResponse {
 	statuses := w.transformPeerStatus(peer)
 
 	var trafficLimit *string
@@ -1547,6 +1631,8 @@ func (w *WgPeer) transformPeerToResponse(peer model.Peer) schema.PeerResponse {
 
 	return schema.PeerResponse{
 		Id:                peer.ID,
+		ServerID:          peer.ServerID,
+		ServerName:        serverNames[peer.ServerID],
 		UUID:              peer.UUID,
 		Disabled:          peer.Disabled,
 		Comment:           peer.Comment,
@@ -1662,7 +1748,7 @@ func (w *WgPeer) GetPeerByID(id uint, resellerID *uint) (*schema.PeerResponse, e
 
 	resp := w.transformPeerToResponse(peer)
 
-	mtPeer, err := w.mikrotikAdaptor.FetchWgPeer(context.Background(), peer.PeerID)
+	mtPeer, err := w.mikrotikAdaptor.ForServer(peer.ServerID).FetchWgPeer(context.Background(), peer.PeerID)
 	if err == nil {
 		_, isOnline, handshakeErr := w.handshakeData(mtPeer)
 		if handshakeErr == nil {
